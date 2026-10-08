@@ -27,7 +27,7 @@
   'use strict';
 
   /* =========================================================
-   *  1. 照片数据 —— 只改这里（9:16 竖版图）
+   *  1. 照片数据 —— 只改这里
    * ========================================================= */
   const PHOTOS = [
     { url: './2025071401.jpg', text: '生日蛋糕' },
@@ -58,37 +58,46 @@
 
   const STYLE = {
     cardBg: '#FFFFFF',
-    imgBg: '#F5EDE4',        // ★ 图片区域统一背景色
+    imgBg: '#F5EDE4',
     textColor: '#7A6151',
     shadowColor: 'rgba(172,136,100,0.30)',
     bgInner: '#FFFDF9',
     bgOuter: '#F6EDE1',
-    imgPlaceholder: '#F5EDE4',
     imgPlaceholderInk: '#E3D3C1'
   };
 
   /* 卡片内部比例（相对卡片宽度） */
   const IN = {
-    pad: 0.075,       // 内边距
-    gap: 0.055,       // 图片与文字间距
-    radius: 0.100,    // 卡片圆角
-    imgRadius: 0.070, // 图片圆角
-    fontSize: 0.078,  // 文案字号
-    lineH: 0.112,     // 文案行高
-    maxLines: 2       // 文案最多行数
+    pad: 0.075,
+    gap: 0.055,
+    radius: 0.100,
+    imgRadius: 0.070,
+    fontSize: 0.078,
+    lineH: 0.112,
+    maxLines: 2
   };
 
-  /* ★ 图片固定宽高比：9 : 16（宽 / 高） */
+  /* 图片尚未加载完成时的兜底宽高比 */
   const IMG_ASPECT = 9 / 16;
 
-  /* ★ 缩放极限（近似“无限放大 / 无限缩小”） */
   const MIN_SCALE = 0.0015;
   const MAX_SCALE = 400;
+  const WORLD_SCALE = 500;
 
-  const WORLD_SCALE = 500;    // 心形单位 → 世界坐标
+  /* ★ 宽高比缓存 */
+  const aspectCache = new Map();
+  function aspectOf(url) {
+    const a = aspectCache.get(url);
+    return (typeof a === 'number' && isFinite(a) && a > 0) ? a : IMG_ASPECT;
+  }
+
+  let ASPECTS = [];
+  function refreshAspects() {
+    ASPECTS = PHOTOS.map(function (p) { return aspectOf(p.url); });
+  }
 
   /* =========================================================
-   *  3. 心形参数曲线（归一化：宽 2，高约 1.81）
+   *  3. 心形参数曲线
    * ========================================================= */
   const HEART = (function () {
     const pts = [];
@@ -111,7 +120,6 @@
     if (y < HY_MIN) HY_MIN = y;
   }
 
-  /** 返回高度 y 处心形内部的水平区间 [[x1,x2], ...] */
   function heartIntervals(y) {
     const P = HEART, L = P.length;
     const xs = [];
@@ -129,17 +137,25 @@
     return out;
   }
 
+  /* ---- 预计算 y → 水平区间表，供列扫描快速查询 ---- */
+  const Y_TABLE = (function () {
+    const N = 520, arr = [];
+    for (let i = 0; i < N; i++) {
+      const y = HY_MIN + (HY_MAX - HY_MIN) * i / (N - 1);
+      arr.push({ y: y, spans: heartIntervals(y) });
+    }
+    return arr;
+  })();
+
   /* =========================================================
-   *  4. 卡片几何（9:16 图片 + 文案区）
+   *  4. 卡片几何：宽度统一，高度随图片比例自适应
    * ========================================================= */
-  /** 给定卡片宽度，算出卡片总高度 */
-  function cardHeight(cw) {
-    const pad = cw * IN.pad;
-    const imgW = cw - pad * 2;
-    const imgH = imgW / IMG_ASPECT;
-    const gap = cw * IN.gap;
-    const textH = cw * IN.lineH * IN.maxLines;
-    return pad * 2 + imgH + gap + textH;
+
+  /** 卡片总高度（给定卡片宽度 w 与该图宽高比） */
+  function cardH(w, aspect) {
+    const imgW = w * (1 - IN.pad * 2);
+    const textH = w * IN.lineH * IN.maxLines;
+    return w * IN.pad * 2 + imgW / aspect + w * IN.gap + textH;
   }
 
   /** 间距随卡片大小动态变化 */
@@ -148,78 +164,117 @@
   }
 
   /* =========================================================
-   *  5. 按行扫描心形，生成卡片中心点
+   *  5. 列式瀑布流布局
+   *     —— 卡片宽度一致，每列从上往下紧密堆叠
+   *     —— 不再按行对齐，消除因高度差异造成的横向留白
    * ========================================================= */
-  function scanLayout(w, gx, gy) {
-    const h = cardHeight(w);
-    const out = [];
-    const step = h + gy;
-    if (step <= 0) return out;
 
-    const yStart = HY_MAX - h / 2;
-    const yEnd = HY_MIN + h / 2;
-
-    for (let y = yStart; y >= yEnd - 1e-9; y -= step) {
-      const spans = heartIntervals(y);
-      for (let s = 0; s < spans.length; s++) {
-        const a = spans[s][0] + w / 2;
-        const b = spans[s][1] - w / 2;
-        if (b <= a) continue;
-
-        const n = Math.floor((b - a + gx) / (w + gx));
-        if (n <= 0) continue;
-
-        const total = n * w + (n - 1) * gx;
-        const start = (a + b) / 2 - total / 2;
-
-        for (let i = 0; i < n; i++) {
-          out.push({
-            x: start + i * (w + gx) + w / 2,
-            y: y
-          });
+  /** 给定列中心 cx 与半宽 halfW，返回该列「能完整容纳」的 y 区间 [yb, yt] */
+  function columnRange(cx, halfW) {
+    const left = cx - halfW;
+    const right = cx + halfW;
+    let yt = -Infinity, yb = Infinity;
+    for (let i = 0; i < Y_TABLE.length; i++) {
+      const sp = Y_TABLE[i].spans;
+      for (let s = 0; s < sp.length; s++) {
+        if (sp[s][0] <= left && right <= sp[s][1]) {
+          const y = Y_TABLE[i].y;
+          if (y > yt) yt = y;
+          if (y < yb) yb = y;
+          break;
         }
       }
+    }
+    return { yt: yt, yb: yb };
+  }
+
+  /** 按卡片宽度生成若干竖直列 */
+  function buildColumns(w, gx) {
+    const halfW = w / 2;
+    let n = Math.floor((2 + gx) / (w + gx));
+    if (n < 1) n = 1;
+
+    const totalW = n * w + (n - 1) * gx;
+    const x0 = -totalW / 2 + halfW;
+
+    const cols = [];
+    for (let i = 0; i < n; i++) {
+      const cx = x0 + i * (w + gx);
+      const r = columnRange(cx, halfW);
+      if (!isFinite(r.yt) || !isFinite(r.yb)) continue;
+      if (r.yt - r.yb < w * 0.45) continue;   // 太短的列直接跳过
+      cols.push({ cx: cx, yt: r.yt, yb: r.yb });
+    }
+    return cols;
+  }
+
+  /**
+   * 依次放置每张卡片：挑「当前可用高度最高、且能放下」的列，
+   * 使各列填充进度趋于均衡，轮廓贴合心形。
+   */
+  function packColumns(cols, heights, gy) {
+    const cursors = cols.map(function (c) { return c.yt; });
+    const out = [];
+
+    for (let k = 0; k < heights.length; k++) {
+      const h = heights[k];
+      let best = -1, bestCursor = -Infinity;
+
+      for (let i = 0; i < cols.length; i++) {
+        const top = cursors[i] - h;
+        if (top < cols[i].yb) continue;          // 这一列放不下
+        if (cursors[i] > bestCursor) {
+          bestCursor = cursors[i];
+          best = i;
+        }
+      }
+      if (best < 0) return null;                 // 放不下了
+
+      const cy = cursors[best] - h / 2;
+      out.push({ col: best, cy: cy, h: h });
+      cursors[best] = cy - h / 2 - gy;           // 光标下移
     }
     return out;
   }
 
   /* =========================================================
-   *  6. 求解卡片尺寸：图片少 → 大；图片多 → 小
-   *     竖版卡片较高，宽度上限相应收紧，保证心形轮廓清晰
+   *  6. 求解卡片宽度：能放下全部照片的最大宽度
    * ========================================================= */
-  const CARD_W_MAX = 0.38;   // ★ 竖版卡片宽度上限（相对心形宽 2）
+  const CARD_W_MAX = 0.34;
 
   function solveLayout(n) {
-    const countAt = function (w) {
+    function fits(w) {
       const g = gapFor(w);
-      return scanLayout(w, g, g).length;
-    };
+      const cols = buildColumns(w, g);
+      if (cols.length === 0) return false;
+      const heights = ASPECTS.map(function (a) { return cardH(w, a); });
+      const res = packColumns(cols, heights, g);
+      return res !== null && res.length >= n;
+    }
 
-    let lo = 0.014, hi = 1.0;
-
+    let lo = 0.02;
     let guard = 0;
-    while (countAt(lo) < n && lo > 0.003 && guard++ < 30) lo *= 0.75;
-    if (countAt(lo) < n) lo = 0.003;
+    while (!fits(lo) && lo > 0.004 && guard++ < 40) lo *= 0.8;
+    if (!fits(lo)) {
+      return { w: 0.012, cols: [], placements: null };
+    }
 
-    // 二分：能放下 n 个的最大卡片宽度
-    for (let i = 0; i < 42; i++) {
+    let hi = 1.0;
+    for (let i = 0; i < 40; i++) {
       const mid = (lo + hi) / 2;
-      if (countAt(mid) >= n) lo = mid;
-      else hi = mid;
+      if (fits(mid)) lo = mid; else hi = mid;
     }
 
     let w = Math.min(lo, CARD_W_MAX);
-    let g = gapFor(w);
-    let pos = scanLayout(w, g, g);
+    guard = 0;
+    while (!fits(w) && w > 0.006 && guard++ < 40) w *= 0.9;
 
-    let safe = 0;
-    while (pos.length < n && w > 0.006 && safe++ < 40) {
-      w *= 0.88;
-      g = gapFor(w);
-      pos = scanLayout(w, g, g);
-    }
+    const g = gapFor(w);
+    const cols = buildColumns(w, g);
+    const heights = ASPECTS.map(function (a) { return cardH(w, a); });
+    const placements = packColumns(cols, heights, g);
 
-    return { w: w, positions: pos };
+    return { w: w, cols: cols, placements: placements };
   }
 
   /* =========================================================
@@ -232,12 +287,13 @@
   let dpr = 1;
 
   let CARD_W = 100;
-  let CARD_H = cardHeight(100);
+  let MAX_CARD_H = 100;
   let cards = [];
   let worldBounds = { w: 1, h: 1 };
+  let userInteracted = false;
 
   /* =========================================================
-   *  8. 工具
+   *  8. 绘图工具
    * ========================================================= */
   function roundRect(g, x, y, w, h, r) {
     r = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
@@ -250,7 +306,6 @@
     g.closePath();
   }
 
-  /** contain：图片完整显示，不裁切，居中留白 */
   function drawContain(g, img, x, y, w, h) {
     const iw = img.naturalWidth || img.width;
     const ih = img.naturalHeight || img.height;
@@ -259,13 +314,10 @@
     const s = Math.min(w / iw, h / ih);
     const dw = iw * s;
     const dh = ih * s;
-    const dx = x + (w - dw) / 2;
-    const dy = y + (h - dh) / 2;
-
-    g.drawImage(img, dx, dy, dw, dh);
+    g.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
   }
 
-  /* ------- 文字换行（带缓存） ------- */
+  /* ------- 文字换行缓存 ------- */
   const measureCanvas = document.createElement('canvas');
   const measureCtx = measureCanvas.getContext('2d');
   const textCache = new Map();
@@ -324,6 +376,17 @@
     im.onload = function () {
       rec.loaded = true;
       rec.img = im;
+
+      const iw = im.naturalWidth || im.width;
+      const ih = im.naturalHeight || im.height;
+      if (iw > 0 && ih > 0) {
+        const a = iw / ih;
+        const prev = aspectCache.get(url);
+        if (prev === undefined || Math.abs(prev - a) > 1e-4) {
+          aspectCache.set(url, a);
+          scheduleRebuild();
+        }
+      }
       requestRender();
     };
     im.onerror = function () { rec.loaded = false; };
@@ -336,7 +399,7 @@
    * ========================================================= */
   function drawCard(c) {
     const cw = CARD_W;
-    const ch = CARD_H;
+    const ch = c.h;
     const px = cw * view.scale;
 
     const left = c.x - cw * 0.5;
@@ -344,7 +407,8 @@
 
     const pad = cw * IN.pad;
     const imgW = cw - pad * 2;
-    const imgH = imgW / IMG_ASPECT;
+    const aspect = aspectOf(c.data.url);
+    const imgH = imgW / aspect;
     const gap = cw * IN.gap;
     const rad = cw * IN.radius;
     const imgRad = cw * IN.imgRadius;
@@ -361,7 +425,7 @@
     ctx.fill();
     ctx.restore();
 
-    /* ---- 图片（9:16 完整显示） ---- */
+    /* ---- 图片 ---- */
     const ix = left + pad;
     const iy = top + pad;
 
@@ -369,16 +433,13 @@
     roundRect(ctx, ix, iy, imgW, imgH, imgRad);
     ctx.clip();
 
-    // ★ 无论图片是否加载完成，图片区域都铺统一的背景色
     ctx.fillStyle = STYLE.imgBg;
     ctx.fillRect(ix, iy, imgW, imgH);
 
     const rec = getImage(c.data.url);
     if (rec.loaded && rec.img) {
-      // 图片按 contain 居中绘制，未铺满的留白会自然露出上面的统一底色
       drawContain(ctx, rec.img, ix, iy, imgW, imgH);
     } else {
-      // 加载中 / 失败：画一个占位小图标
       ctx.fillStyle = STYLE.imgPlaceholderInk;
       const cx0 = ix + imgW / 2;
       const cy0 = iy + imgH / 2;
@@ -393,7 +454,7 @@
     }
     ctx.restore();
 
-    /* ---- 文案（缩得太小就不画，省性能） ---- */
+    /* ---- 文案 ---- */
     if (px < 18) return;
 
     const fs = cw * IN.fontSize;
@@ -432,11 +493,6 @@
     });
   }
 
-  /**
-   * ★ 关键修复：渲染前同步后备缓冲区尺寸
-   * 移动端缩放 / 地址栏伸缩时，clientWidth/clientHeight 会先于
-   * window.resize 变化，若继续按旧尺寸绘制，画布底部就会残留上一帧像素。
-   */
   function syncCanvasSize() {
     const cssW = canvas.clientWidth;
     const cssH = canvas.clientHeight;
@@ -447,7 +503,7 @@
     const bh = Math.max(1, Math.round(cssH * nextDpr));
 
     if (canvas.width !== bw || canvas.height !== bh) {
-      canvas.width = bw;    // 赋值即重置并清空整块后备缓冲区
+      canvas.width = bw;
       canvas.height = bh;
     }
     dpr = nextDpr;
@@ -460,13 +516,10 @@
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
 
-    // ★ 用单位变换按「真实像素」清空整块画布，杜绝底部残留
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-    // 暖白背景
     const g = ctx.createRadialGradient(
       W / 2, H * 0.44, 0,
       W / 2, H * 0.44, Math.max(W, H) * 0.86
@@ -483,7 +536,7 @@
     const camX = -view.x / view.scale;
     const camY = -view.y / view.scale;
     const limitX = W / 2 / view.scale + CARD_W;
-    const limitY = H / 2 / view.scale + CARD_H;
+    const limitY = H / 2 / view.scale + MAX_CARD_H;
 
     for (let i = 0; i < cards.length; i++) {
       const c = cards[i];
@@ -513,10 +566,7 @@
     view.y = 0;
   }
 
-  function resize() {
-    // 尺寸同步与重绘都交给 render()，这里只需触发一帧
-    requestRender();
-  }
+  function resize() { requestRender(); }
 
   /* =========================================================
    * 12. 交互
@@ -525,6 +575,8 @@
 
   canvas.addEventListener('wheel', function (e) {
     e.preventDefault();
+    userInteracted = true;
+
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left - rect.width / 2;
     const my = e.clientY - rect.top - rect.height / 2;
@@ -555,6 +607,7 @@
   }
 
   canvas.addEventListener('pointerdown', function (e) {
+    userInteracted = true;
     try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 2) pinch = pinchInfo();
@@ -610,42 +663,52 @@
   /* =========================================================
    * 13. 初始化
    * ========================================================= */
+  let rebuildTimer = null;
+
+  function scheduleRebuild() {
+    if (rebuildTimer) clearTimeout(rebuildTimer);
+    rebuildTimer = setTimeout(function () {
+      rebuildTimer = null;
+      build();
+      if (!userInteracted) fitView();
+      requestRender();
+    }, 140);
+  }
+
   function build() {
+    refreshAspects();
+
     const N = Math.max(1, PHOTOS.length);
-
     const solved = solveLayout(N);
-    let pos = solved.positions;
 
-    CARD_W = solved.w * WORLD_SCALE;
-    CARD_H = cardHeight(CARD_W);
+    const unitW = solved.w;
+    CARD_W = unitW * WORLD_SCALE;
 
-    if (pos.length === 0) {
-      pos = [{ x: 0, y: 0 }];
+    let cols = solved.cols;
+    let placements = solved.placements;
+
+    if (!placements || !placements.length) {
+      /* 兜底：单张居中 */
+      cols = [{ cx: 0 }];
+      placements = [{ col: 0, cy: 0, h: cardH(unitW, ASPECTS[0] || IMG_ASPECT) }];
     }
 
-    // 位置比照片多 → 均匀抽稀，保持心形轮廓均匀
-    if (pos.length > N) {
-      const picked = [];
-      for (let i = 0; i < N; i++) {
-        picked.push(pos[Math.floor((i + 0.5) * pos.length / N)]);
-      }
-      pos = picked;
-    }
-
-    // 生成卡片（心形 y 轴向上 → 世界坐标 y 轴向下）
-    cards = pos.map(function (p, i) {
+    cards = placements.map(function (p, i) {
+      const col = cols[p.col] || { cx: 0 };
       return {
-        x: p.x * WORLD_SCALE,
-        y: -p.y * WORLD_SCALE,
+        x: col.cx * WORLD_SCALE,
+        y: -p.cy * WORLD_SCALE,
+        h: p.h * WORLD_SCALE,
         data: PHOTOS[i % PHOTOS.length]
       };
     });
 
-    // 包围盒并居中
-    const hw = CARD_W / 2, hh = CARD_H / 2;
+    /* 包围盒 + 居中 */
+    const hw = CARD_W / 2;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (let i = 0; i < cards.length; i++) {
       const c = cards[i];
+      const hh = c.h / 2;
       if (c.x - hw < minX) minX = c.x - hw;
       if (c.x + hw > maxX) maxX = c.x + hw;
       if (c.y - hh < minY) minY = c.y - hh;
@@ -664,10 +727,13 @@
       h: Math.max(1, maxY - minY)
     };
 
-    // 预加载图片
+    MAX_CARD_H = 0;
     for (let i = 0; i < cards.length; i++) {
-      getImage(cards[i].data.url);
+      if (cards[i].h > MAX_CARD_H) MAX_CARD_H = cards[i].h;
     }
+    if (MAX_CARD_H <= 0) MAX_CARD_H = CARD_W;
+
+    for (let i = 0; i < cards.length; i++) getImage(cards[i].data.url);
   }
 
   function init() {
@@ -677,22 +743,18 @@
     fitView();
     requestRender();
 
-    /* ---- 尺寸变化的多种监听：确保移动端万无一失 ---- */
     window.addEventListener('resize', resize);
     window.addEventListener('orientationchange', resize);
 
-    // ★ 移动端捏合缩放 / 地址栏伸缩时，visualViewport 会变化
     if (window.visualViewport) {
       window.visualViewport.addEventListener('resize', resize);
       window.visualViewport.addEventListener('scroll', resize);
     }
 
-    // 兜底：屏幕旋转后延迟再校正一次
     window.addEventListener('orientationchange', function () {
       setTimeout(resize, 260);
     });
 
-    // 异步加载卡通字体
     try {
       const link = document.createElement('link');
       link.rel = 'stylesheet';
