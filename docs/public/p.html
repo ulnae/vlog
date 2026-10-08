@@ -165,8 +165,6 @@
 
   /* =========================================================
    *  5. 列式瀑布流布局
-   *     —— 卡片宽度一致，每列从上往下紧密堆叠
-   *     —— 不再按行对齐，消除因高度差异造成的横向留白
    * ========================================================= */
 
   /** 给定列中心 cx 与半宽 halfW，返回该列「能完整容纳」的 y 区间 [yb, yt] */
@@ -292,6 +290,54 @@
   let worldBounds = { w: 1, h: 1 };
   let userInteracted = false;
 
+  /* ---------------------------------------------------------
+   *  ★ 布局补间：图片陆续加载导致布局变化时，卡片平滑过渡
+   * --------------------------------------------------------- */
+  let tween = null;                 // 当前补间状态
+  const TWEEN_MS = 620;             // 补间时长
+
+  function easeInOutCubic(t) {
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+  }
+
+  /** 把某条补间推进到进度 e（0~1），直接写回 cards 与 view */
+  function applyTweenProgress(ts, e) {
+    for (let i = 0; i < ts.cards.length; i++) {
+      const s = ts.cards[i];
+      const c = cards[i];
+      if (!c || !s) continue;
+      c.x = s.fx + (s.tx - s.fx) * e;
+      c.y = s.fy + (s.ty - s.fy) * e;
+      c.h = s.fh + (s.th - s.fh) * e;
+    }
+    const v = ts.view;
+    if (v) {
+      view.scale = v.fs + (v.ts - v.fs) * e;
+      view.x     = v.fx + (v.tx - v.fx) * e;
+      view.y     = v.fy + (v.ty - v.fy) * e;
+    }
+  }
+
+  function stepTween(now) {
+    if (!tween) return;
+    const p = (now - tween.t0) / tween.dur;
+    if (p >= 1) {
+      const ts = tween;
+      tween = null;
+      applyTweenProgress(ts, 1);      // 精确落到终点
+    } else {
+      applyTweenProgress(tween, easeInOutCubic(p));
+    }
+  }
+
+  /** 立即结束补间（用户开始操作时调用，避免和手势打架） */
+  function finishTween() {
+    if (!tween) return;
+    const ts = tween;
+    tween = null;
+    applyTweenProgress(ts, 1);
+  }
+
   /* =========================================================
    *  8. 绘图工具
    * ========================================================= */
@@ -384,7 +430,7 @@
         const prev = aspectCache.get(url);
         if (prev === undefined || Math.abs(prev - a) > 1e-4) {
           aspectCache.set(url, a);
-          scheduleRebuild();
+          scheduleRebuild();               // 触发平滑重排
         }
       }
       requestRender();
@@ -480,17 +526,22 @@
   }
 
   /* =========================================================
-   * 10. 渲染
+   * 10. 渲染（带补间循环）
    * ========================================================= */
   let rafPending = false;
 
   function requestRender() {
     if (rafPending) return;
     rafPending = true;
-    requestAnimationFrame(function () {
-      rafPending = false;
-      render();
-    });
+    requestAnimationFrame(onFrame);
+  }
+
+  function onFrame(now) {
+    rafPending = false;
+
+    if (tween) stepTween(now);        // 先把补间推进到「现在」
+    render();
+    if (tween) requestRender();       // 补间未结束 → 继续下一帧
   }
 
   function syncCanvasSize() {
@@ -551,7 +602,7 @@
   /* =========================================================
    * 11. 视图适配
    * ========================================================= */
-  function fitView() {
+  function computeFitView() {
     const W = canvas.clientWidth || 1;
     const H = canvas.clientHeight || 1;
     const padRatio = 0.06;
@@ -561,9 +612,7 @@
     let s = Math.min(availW / worldBounds.w, availH / worldBounds.h);
     s = Math.max(MIN_SCALE, Math.min(s, MAX_SCALE));
 
-    view.scale = s;
-    view.x = 0;
-    view.y = 0;
+    return { scale: s, x: 0, y: 0 };
   }
 
   function resize() { requestRender(); }
@@ -576,6 +625,7 @@
   canvas.addEventListener('wheel', function (e) {
     e.preventDefault();
     userInteracted = true;
+    finishTween();
 
     const rect = canvas.getBoundingClientRect();
     const mx = e.clientX - rect.left - rect.width / 2;
@@ -608,6 +658,7 @@
 
   canvas.addEventListener('pointerdown', function (e) {
     userInteracted = true;
+    finishTween();                     // 手势优先，补间立即收尾
     try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pointers.size === 2) pinch = pinchInfo();
@@ -661,7 +712,7 @@
   });
 
   /* =========================================================
-   * 13. 初始化
+   * 13. 构建布局（含补间）
    * ========================================================= */
   let rebuildTimer = null;
 
@@ -669,13 +720,24 @@
     if (rebuildTimer) clearTimeout(rebuildTimer);
     rebuildTimer = setTimeout(function () {
       rebuildTimer = null;
-      build();
-      if (!userInteracted) fitView();
+      build({ animate: true });
       requestRender();
     }, 140);
   }
 
-  function build() {
+  /**
+   * opts.animate : 是否让卡片从旧位置平滑滑动到新位置
+   */
+  function build(opts) {
+    opts = opts || {};
+    const wantAnim = !!opts.animate && cards.length > 0;
+
+    /* ---- 记录旧状态（作为补间起点） ---- */
+    const prevPos = cards.map(function (c) {
+      return { x: c.x, y: c.y, h: c.h };
+    });
+    const prevView = { x: view.x, y: view.y, scale: view.scale };
+
     refreshAspects();
 
     const N = Math.max(1, PHOTOS.length);
@@ -693,7 +755,7 @@
       placements = [{ col: 0, cy: 0, h: cardH(unitW, ASPECTS[0] || IMG_ASPECT) }];
     }
 
-    cards = placements.map(function (p, i) {
+    const next = placements.map(function (p, i) {
       const col = cols[p.col] || { cx: 0 };
       return {
         x: col.cx * WORLD_SCALE,
@@ -703,11 +765,11 @@
       };
     });
 
-    /* 包围盒 + 居中 */
+    /* ---- 包围盒 + 居中 ---- */
     const hw = CARD_W / 2;
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (let i = 0; i < cards.length; i++) {
-      const c = cards[i];
+    for (let i = 0; i < next.length; i++) {
+      const c = next[i];
       const hh = c.h / 2;
       if (c.x - hw < minX) minX = c.x - hw;
       if (c.x + hw > maxX) maxX = c.x + hw;
@@ -717,9 +779,9 @@
 
     const cx = (minX + maxX) / 2;
     const cy = (minY + maxY) / 2;
-    for (let i = 0; i < cards.length; i++) {
-      cards[i].x -= cx;
-      cards[i].y -= cy;
+    for (let i = 0; i < next.length; i++) {
+      next[i].x -= cx;
+      next[i].y -= cy;
     }
 
     worldBounds = {
@@ -727,20 +789,65 @@
       h: Math.max(1, maxY - minY)
     };
 
-    MAX_CARD_H = 0;
-    for (let i = 0; i < cards.length; i++) {
-      if (cards[i].h > MAX_CARD_H) MAX_CARD_H = cards[i].h;
+    /* ---- 最大卡片高度（含旧值，保证补间期间裁剪不误伤） ---- */
+    let maxH = 0;
+    for (let i = 0; i < next.length; i++) if (next[i].h > maxH) maxH = next[i].h;
+    for (let i = 0; i < prevPos.length; i++) if (prevPos[i].h > maxH) maxH = prevPos[i].h;
+    MAX_CARD_H = maxH > 0 ? maxH : CARD_W;
+
+    /* ---- 视图目标 ---- */
+    const targetView = userInteracted
+      ? { scale: view.scale, x: view.x, y: view.y }   // 用户已操作过，不强行回正
+      : computeFitView();
+
+    /* ---- 落地：平滑过渡 or 直接设置 ---- */
+    if (wantAnim) {
+      const froms = next.map(function (c, i) {
+        const p = prevPos[i];
+        return p ? { x: p.x, y: p.y, h: p.h }
+                 : { x: c.x, y: c.y, h: c.h };
+      });
+
+      tween = {
+        t0: performance.now(),
+        dur: TWEEN_MS,
+        cards: next.map(function (c, i) {
+          return {
+            fx: froms[i].x, fy: froms[i].y, fh: froms[i].h,
+            tx: c.x,        ty: c.y,        th: c.h
+          };
+        }),
+        view: {
+          fs: prevView.scale, fx: prevView.x, fy: prevView.y,
+          ts: targetView.scale, tx: targetView.x, ty: targetView.y
+        }
+      };
+
+      /* 卡片先摆到旧位置，随后由 stepTween 逐帧推进 */
+      for (let i = 0; i < next.length; i++) {
+        next[i].x = froms[i].x;
+        next[i].y = froms[i].y;
+        next[i].h = froms[i].h;
+      }
+      cards = next;
+    } else {
+      cards = next;
+      tween = null;
+      view.scale = targetView.scale;
+      view.x = targetView.x;
+      view.y = targetView.y;
     }
-    if (MAX_CARD_H <= 0) MAX_CARD_H = CARD_W;
 
     for (let i = 0; i < cards.length; i++) getImage(cards[i].data.url);
   }
 
+  /* =========================================================
+   * 14. 初始化
+   * ========================================================= */
   function init() {
     dpr = window.devicePixelRatio || 1;
 
-    build();
-    fitView();
+    build({ animate: false });     // 首屏直接落位，不做补间
     requestRender();
 
     window.addEventListener('resize', resize);
