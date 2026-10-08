@@ -37,14 +37,17 @@
     { url: './2025110601.jpg', text: '生日快乐宝🎉' },
     { url: './2025112301.jpg', text: '订婚订婚' },
     { url: './2025120501.jpg', text: '手捧花' },
-    { url: './2025120502.jpg', text: '宝宝真美♥' },
+    { url: './2025120502.jpg', text: '我老婆真美❤' },
     { url: './2026012801.jpg', text: '持证上岗' },
     { url: './2026030501.jpg', text: '小小叶，你好呀' },
-    { url: './2026030502.jpg', text: '乖乖的' },
-    { url: './2026030503.jpg', text: '最可爱了' },
+    { url: './2026030502.jpg', text: '么么么😙' },
+    { url: './2026030503.jpg', text: '最可爱了霖霖' },
+    { url: './2026062601.jpg', text: '小小的一只' },
+    { url: './2026062602.jpg', text: '皱起小小的眉头' },
+    { url: './2026062603.jpg', text: '小小的鼻子' },
+    { url: './2026062604.jpg', text: '哼~不理我' },
     { url: './2026100401.jpeg', text: '一百天喽' },
-    { url: './2026100402.jpeg', text: '哈哈哈' },
-
+    { url: './2026100402.jpeg', text: '开心到飞起' },
   ];
 
   /* =========================================================
@@ -55,6 +58,7 @@
 
   const STYLE = {
     cardBg: '#FFFFFF',
+    imgBg: '#F5EDE4',        // ★ 图片区域统一背景色
     textColor: '#7A6151',
     shadowColor: 'rgba(172,136,100,0.30)',
     bgInner: '#FFFDF9',
@@ -365,15 +369,16 @@
     roundRect(ctx, ix, iy, imgW, imgH, imgRad);
     ctx.clip();
 
+    // ★ 无论图片是否加载完成，图片区域都铺统一的背景色
+    ctx.fillStyle = STYLE.imgBg;
+    ctx.fillRect(ix, iy, imgW, imgH);
+
     const rec = getImage(c.data.url);
     if (rec.loaded && rec.img) {
-      // 底色（留白区域与卡片一致，视觉更干净）
-      ctx.fillStyle = STYLE.cardBg;
-      ctx.fillRect(ix, iy, imgW, imgH);
+      // 图片按 contain 居中绘制，未铺满的留白会自然露出上面的统一底色
       drawContain(ctx, rec.img, ix, iy, imgW, imgH);
     } else {
-      ctx.fillStyle = STYLE.imgPlaceholder;
-      ctx.fillRect(ix, iy, imgW, imgH);
+      // 加载中 / 失败：画一个占位小图标
       ctx.fillStyle = STYLE.imgPlaceholderInk;
       const cx0 = ix + imgW / 2;
       const cy0 = iy + imgH / 2;
@@ -427,13 +432,39 @@
     });
   }
 
+  /**
+   * ★ 关键修复：渲染前同步后备缓冲区尺寸
+   * 移动端缩放 / 地址栏伸缩时，clientWidth/clientHeight 会先于
+   * window.resize 变化，若继续按旧尺寸绘制，画布底部就会残留上一帧像素。
+   */
+  function syncCanvasSize() {
+    const cssW = canvas.clientWidth;
+    const cssH = canvas.clientHeight;
+    if (!cssW || !cssH) return false;
+
+    const nextDpr = window.devicePixelRatio || 1;
+    const bw = Math.max(1, Math.round(cssW * nextDpr));
+    const bh = Math.max(1, Math.round(cssH * nextDpr));
+
+    if (canvas.width !== bw || canvas.height !== bh) {
+      canvas.width = bw;    // 赋值即重置并清空整块后备缓冲区
+      canvas.height = bh;
+    }
+    dpr = nextDpr;
+    return true;
+  }
+
   function render() {
+    if (!syncCanvasSize()) return;
+
     const W = canvas.clientWidth;
     const H = canvas.clientHeight;
-    if (!W || !H) return;
+
+    // ★ 用单位变换按「真实像素」清空整块画布，杜绝底部残留
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, W, H);
 
     // 暖白背景
     const g = ctx.createRadialGradient(
@@ -483,11 +514,7 @@
   }
 
   function resize() {
-    dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth;
-    const H = canvas.clientHeight;
-    canvas.width = Math.max(1, Math.round(W * dpr));
-    canvas.height = Math.max(1, Math.round(H * dpr));
+    // 尺寸同步与重绘都交给 render()，这里只需触发一帧
     requestRender();
   }
 
@@ -645,15 +672,24 @@
 
   function init() {
     dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(canvas.clientWidth * dpr));
-    canvas.height = Math.max(1, Math.round(canvas.clientHeight * dpr));
 
     build();
     fitView();
     requestRender();
 
-    window.addEventListener('resize', function () {
-      resize();
+    /* ---- 尺寸变化的多种监听：确保移动端万无一失 ---- */
+    window.addEventListener('resize', resize);
+    window.addEventListener('orientationchange', resize);
+
+    // ★ 移动端捏合缩放 / 地址栏伸缩时，visualViewport 会变化
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener('resize', resize);
+      window.visualViewport.addEventListener('scroll', resize);
+    }
+
+    // 兜底：屏幕旋转后延迟再校正一次
+    window.addEventListener('orientationchange', function () {
+      setTimeout(resize, 260);
     });
 
     // 异步加载卡通字体
