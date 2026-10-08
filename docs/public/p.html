@@ -47,7 +47,7 @@
     { url: './2026062603.jpeg', text: '小小的鼻子' },
     { url: './2026062604.jpeg', text: '哼~不理我' },
     { url: './2026100401.jpeg', text: '一百天喽' },
-    { url: './2026100402.jpeg', text: '开心到飞起' },
+    { url: './2026100402.jpeg', text: '一脸坏笑' },
   ];
 
   /* =========================================================
@@ -60,6 +60,7 @@
     cardBg: '#FFFFFF',
     imgBg: '#F5EDE4',
     textColor: '#7A6151',
+    timeColor: '#C4B5A5',
     shadowColor: 'rgba(172,136,100,0.30)',
     bgInner: '#FFFDF9',
     bgOuter: '#F6EDE1',
@@ -68,13 +69,16 @@
 
   /* 卡片内部比例（相对卡片宽度） */
   const IN = {
-    pad: 0.075,
-    gap: 0.055,
+    pad: 0,
+    gap: 0,
     radius: 0.100,
     imgRadius: 0.070,
     fontSize: 0.078,
     lineH: 0.112,
-    maxLines: 2
+    maxLines: 2,
+    timeFontSize: 0.055,
+    timeLineH: 0.095,
+    timePadBottom: 0.035
   };
 
   /* 图片尚未加载完成时的兜底宽高比 */
@@ -94,6 +98,16 @@
   let ASPECTS = [];
   function refreshAspects() {
     ASPECTS = PHOTOS.map(function (p) { return aspectOf(p.url); });
+  }
+
+  /* ★ 从图片文件名解析日期：去掉最后两位索引序号 */
+  function dateFromUrl(url) {
+    const m = String(url).match(/(\d+)/);
+    if (!m) return '';
+    let d = m[1];
+    if (d.length > 8) d = d.slice(0, -2);   // 后两位是索引序号
+    if (d.length < 8) return '';
+    return d.slice(0, 4) + '.' + d.slice(4, 6) + '.' + d.slice(6, 8);
   }
 
   /* =========================================================
@@ -155,12 +169,13 @@
   function cardH(w, aspect) {
     const imgW = w * (1 - IN.pad * 2);
     const textH = w * IN.lineH * IN.maxLines;
-    return w * IN.pad * 2 + imgW / aspect + w * IN.gap + textH;
+    const timeH = w * IN.timeLineH;                 // ★ 时间行
+    return w * IN.pad * 2 + imgW / aspect + w * IN.gap + textH + timeH;
   }
 
   /** 间距随卡片大小动态变化 */
   function gapFor(w) {
-    return 0.020 + 0.160 * w;
+    return 0.00 + 0.060 * w;
   }
 
   /* =========================================================
@@ -500,7 +515,7 @@
     }
     ctx.restore();
 
-    /* ---- 文案 ---- */
+    /* ---- 文案 + 时间 ---- */
     if (px < 18) return;
 
     const fs = cw * IN.fontSize;
@@ -508,6 +523,7 @@
     const textTop = iy + imgH + gap;
     const textAreaH = lineH * IN.maxLines;
 
+    /* 文案（在文字区内垂直居中，最多 maxLines 行，超出省略号） */
     ctx.save();
     ctx.font = fs + 'px ' + FONT_FAMILY;
     ctx.textAlign = 'center';
@@ -523,6 +539,21 @@
       ctx.fillText(lines[i], c.x, startY + i * lineH);
     }
     ctx.restore();
+
+    /* ★ 时间（固定卡片右下角，使用 alphabetic 基线，留出底部内边距） */
+    if (c.date) {
+      const tfs = cw * IN.timeFontSize;
+      if (tfs > 0.5) {
+        ctx.save();
+        ctx.font = tfs + 'px ' + FONT_FAMILY;
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = STYLE.timeColor;
+        const timeY = top + ch - cw * IN.timePadBottom;
+        ctx.fillText(c.date, left + cw - cw * IN.timePadBottom, timeY);
+        ctx.restore();
+      }
+    }
   }
 
   /* =========================================================
@@ -757,11 +788,13 @@
 
     const next = placements.map(function (p, i) {
       const col = cols[p.col] || { cx: 0 };
+      const photo = PHOTOS[i % PHOTOS.length];
       return {
         x: col.cx * WORLD_SCALE,
         y: -p.cy * WORLD_SCALE,
         h: p.h * WORLD_SCALE,
-        data: PHOTOS[i % PHOTOS.length]
+        data: photo,
+        date: dateFromUrl(photo.url)        // ★ 图片名解析出的日期
       };
     });
 
