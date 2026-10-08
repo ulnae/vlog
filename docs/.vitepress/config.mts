@@ -27,6 +27,9 @@ export default defineConfig({
       },
       {
         text: '2026', link: '/2026/01/28', activeMatch: '/2026/'
+      },
+      {
+        text: '照片墙', link: '/photo'
       }
     ],
 

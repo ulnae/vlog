@@ -3,8 +3,8 @@
 layout: home
 
 hero:
-  name: YYH&LSY
-  text: 欢迎来到我们的博客
+  name: Y&L
+  text: 欢迎🎉
   tagline: 记录美好生活
   image:
     src: /siam.svg
