@@ -3,937 +3,310 @@ layout: page
 footer: false
 ---
 
-<canvas id="cv"></canvas>
+<canvas ref="canvasRef" id="cv"></canvas>
 
-<script setup>
-import { onMounted } from 'vue'
+<script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { PHOTOS, photoUrl, dateFromUrl } from './.vitepress/theme/utils/photos'
+import { IMG_ASPECT, MIN_SCALE, MAX_SCALE, TWEEN_MS, WORLD_SCALE } from './.vitepress/theme/utils/constants'
+import { solveLayout, worldUnits } from './.vitepress/theme/utils/layout'
+import { drawCard, type Card } from './.vitepress/theme/utils/renderer'
+import { bindGestures } from './.vitepress/theme/utils/gestures'
 
-onMounted(() => {
-  'use strict'
+const canvasRef = ref<HTMLCanvasElement | null>(null)
+let canvas: HTMLCanvasElement
+let ctx: CanvasRenderingContext2D
+let dpr = 1
+let destroyed = false
+let rafId = 0
+let rafPending = false
+let rebuildTimer: ReturnType<typeof setTimeout> | null = null
+let unbind: (() => void) | null = null
 
-  /* =========================================================
-   *  1. 照片数据 —— 只改这里
-   *  ★ VitePress：图片放到 docs/public/ 下，
-   *    本页放在 docs/ 根目录（如 docs/photos.md），
-   *    则 ./2025/07/14/01.jpg 会被解析为 /2025/07/14/01.jpg
-   * ========================================================= */
-  const PHOTOS = [
-    { url: '/2025/07/14/01.jpg', text: '生日蛋糕' },
-    { url: '/2025/07/14/02.jpg', text: '生日礼物' },
-    { url: '/2025/08/29/01.jpg', text: '七夕快乐' },
-    { url: '/2025/08/29/02.jpg', text: '七夕快乐' },
-    { url: '/2025/11/06/01.jpg', text: '生日快乐宝🎉' },
-    { url: '/2025/11/23/01.jpg', text: '订婚订婚' },
-    { url: '/2025/12/05/01.jpg', text: '手捧花' },
-    { url: '/2025/12/05/02.jpg', text: '我老婆真美❤' },
-    { url: '/2026/01/28/01.jpg', text: '持证上岗' },
-    { url: '/2026/03/05/01.jpg', text: '小小叶，你好呀' },
-    { url: '/2026/03/05/02.jpg', text: '么么么😙' },
-    { url: '/2026/03/05/03.jpg', text: '最可爱了霖霖' },
-    { url: '/2026/06/26/01.jpeg', text: '小小的一只' },
-    { url: '/2026/06/26/02.jpeg', text: '皱起小小的眉头' },
-    { url: '/2026/06/26/03.jpeg', text: '小小的鼻子' },
-    { url: '/2026/06/26/04.jpeg', text: '哼~不理我' },
-    { url: '/2026/10/01/01.jpeg', text: '6.1kg啦！' },
-    { url: '/2026/10/01/02.jpeg', text: '好舒服啊' },
-    { url: '/2026/10/04/01.jpeg', text: '一百天喽' },
-    { url: '/2026/10/04/02.jpeg', text: '一脸坏笑' },
-    { url: '/2026/10/06/01.jpeg', text: '呼呼大睡' },
-  ];
+const view = { scale: 1, x: 0, y: 0 }
+let CARD_W = 100
+let MAX_CARD_H = 100
+let cards: Card[] = []
+let worldBounds = { w: 1, h: 1 }
+let userInteracted = false
 
-  /* =========================================================
-   *  2. 外观配置
-   * ========================================================= */
-  const FONT_FAMILY =
-    '"ZCOOL KuaiLe","Comic Sans MS","Chalkboard SE","PingFang SC","Hiragino Sans GB","Microsoft YaHei",cursive,sans-serif';
+const aspectCache = new Map<string, number>()
+const imgCache = new Map<string, { loaded: boolean; img: HTMLImageElement | null }>()
 
-  const STYLE = {
-    cardBg: '#FFFFFF',
-    imgBg: '#F5EDE4',
-    textColor: '#7A6151',
-    timeColor: '#C4B5A5',
-    shadowColor: 'rgba(172,136,100,0.30)',
-    bgInner: '#FFFDF9',
-    bgOuter: '#F6EDE1',
-    imgPlaceholderInk: '#E3D3C1'
-  };
+let tween: any = null
 
-  /* 卡片内部比例（相对卡片宽度） */
-  const IN = {
-    pad: 0,
-    gap: 0,
-    radius: 0.100,
-    imgRadius: 0.070,
-    fontSize: 0.078,
-    lineH: 0.112,
-    maxLines: 2,
-    timeFontSize: 0.055,
-    timeLineH: 0.095,
-    timePadBottom: 0.035
-  };
+function aspectOf(url: string) {
+  const a = aspectCache.get(url)
+  return typeof a === 'number' && isFinite(a) && a > 0 ? a : IMG_ASPECT
+}
 
-  /* 图片尚未加载完成时的兜底宽高比 */
-  const IMG_ASPECT = 9 / 16;
-
-  const MIN_SCALE = 0.0015;
-  const MAX_SCALE = 400;
-  const WORLD_SCALE = 500;
-
-  /* ★ 宽高比缓存 */
-  const aspectCache = new Map();
-  function aspectOf(url) {
-    const a = aspectCache.get(url);
-    return (typeof a === 'number' && isFinite(a) && a > 0) ? a : IMG_ASPECT;
-  }
-
-  let ASPECTS = [];
-  function refreshAspects() {
-    ASPECTS = PHOTOS.map(function (p) { return aspectOf(p.url); });
-  }
-
-  /* ★ 从图片路径解析日期
-   *   新格式：./2025/07/14/01.jpg   →  2025.07.14
-   *   旧格式：./2025071401.jpg      →  2025.07.14 （兼容保留）
-   *   分隔符支持 / - _ . 等任意非数字字符
-   */
-  function dateFromUrl(url) {
-    const s = String(url);
-
-    /* 1) 新路径格式：yyyy/mm/dd/序号 */
-    const m = s.match(/(?:^|\D)(\d{4})\D(\d{1,2})\D(\d{1,2})(?:\D|$)/);
-    if (m) {
-      const y  = m[1];
-      const mo = Number(m[2]);
-      const d  = Number(m[3]);
-      if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) {
-        return y + '.' +
-               String(mo).padStart(2, '0') + '.' +
-               String(d).padStart(2, '0');
+function getImage(url: string) {
+  let rec = imgCache.get(url)
+  if (rec) return rec
+  rec = { loaded: false, img: null }
+  imgCache.set(url, rec)
+  const im = new Image()
+  im.onload = () => {
+    rec!.loaded = true
+    rec!.img = im
+    const iw = im.naturalWidth || im.width
+    const ih = im.naturalHeight || im.height
+    if (iw > 0 && ih > 0) {
+      const a = iw / ih
+      if (Math.abs((aspectCache.get(url) ?? 0) - a) > 1e-4) {
+        aspectCache.set(url, a)
+        if (cards.length > 0) scheduleRebuild()
       }
     }
+    requestRender()
+  }
+  im.onerror = () => { rec!.loaded = false }
+  im.src = photoUrl(url)
+  return rec
+}
 
-    /* 2) 旧格式兜底：连续数字，前 8 位即 yyyymmdd */
-    const m2 = s.match(/(\d{8,})/);
-    if (!m2) return '';
-    const dstr = m2[1].slice(0, 8);
-    return dstr.slice(0, 4) + '.' + dstr.slice(4, 6) + '.' + dstr.slice(6, 8);
+async function preloadAll() {
+  await Promise.all(PHOTOS.map(p => new Promise<void>(resolve => {
+    const im = new Image()
+    im.onload = () => {
+      const iw = im.naturalWidth || im.width
+      const ih = im.naturalHeight || im.height
+      if (iw > 0 && ih > 0) aspectCache.set(p.url, iw / ih)
+      resolve()
+    }
+    im.onerror = () => resolve()
+    im.src = photoUrl(p.url)
+  })))
+}
+
+function build(animate: boolean) {
+  const wantAnim = animate && cards.length > 0
+  const prevPos = cards.map(c => ({ x: c.x, y: c.y, h: c.h }))
+  const prevView = { ...view }
+
+  const aspects = PHOTOS.map(p => aspectOf(p.url))
+  const solved = solveLayout(PHOTOS.length, aspects)
+  const { cardW, placements } = worldUnits(solved)
+  CARD_W = cardW
+
+  if (!placements.length) {
+    cards = [{
+      x: 0, y: 0, h: CARD_W,
+      data: PHOTOS[0],
+      date: dateFromUrl(PHOTOS[0].url)
+    }]
+    worldBounds = { w: CARD_W, h: CARD_W }
+    return
   }
 
-  /* =========================================================
-   *  3. 心形参数曲线
-   * ========================================================= */
-  const HEART = (function () {
-    const pts = [];
-    const N = 900;
-    for (let i = 0; i < N; i++) {
-      const t = (i / N) * Math.PI * 2;
-      const s = Math.sin(t);
-      const x = 16 * s * s * s;
-      const y = 13 * Math.cos(t) - 5 * Math.cos(2 * t)
-              - 2 * Math.cos(3 * t) - Math.cos(4 * t);
-      pts.push([x / 16, y / 16]);
-    }
-    return pts;
-  })();
+  const next: Card[] = placements.map((p, i) => ({
+    x: p.x, y: p.y, h: p.h,
+    data: PHOTOS[i % PHOTOS.length],
+    date: dateFromUrl(PHOTOS[i % PHOTOS.length].url)
+  }))
 
-  let HY_MAX = -Infinity, HY_MIN = Infinity;
-  for (let i = 0; i < HEART.length; i++) {
-    const y = HEART[i][1];
-    if (y > HY_MAX) HY_MAX = y;
-    if (y < HY_MIN) HY_MIN = y;
+  const hw = CARD_W / 2
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+  for (const c of next) {
+    const hh = c.h / 2
+    if (c.x - hw < minX) minX = c.x - hw
+    if (c.x + hw > maxX) maxX = c.x + hw
+    if (c.y - hh < minY) minY = c.y - hh
+    if (c.y + hh > maxY) maxY = c.y + hh
+  }
+  const cx = (minX + maxX) / 2
+  const cy = (minY + maxY) / 2
+  for (const c of next) { c.x -= cx; c.y -= cy }
+  worldBounds = { w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) }
+
+  MAX_CARD_H = Math.max(...next.map(c => c.h), ...prevPos.map(p => p.h), CARD_W)
+
+  const targetView = userInteracted
+    ? { scale: view.scale, x: view.x, y: view.y }
+    : computeFitView()
+
+  if (wantAnim) {
+    const froms = next.map((c, i) => prevPos[i] ?? { x: c.x, y: c.y, h: c.h })
+    tween = {
+      t0: performance.now(),
+      dur: TWEEN_MS,
+      cards: next.map((c, i) => ({
+        fx: froms[i].x, fy: froms[i].y, fh: froms[i].h,
+        tx: c.x, ty: c.y, th: c.h
+      })),
+      view: { fs: prevView.scale, fx: prevView.x, fy: prevView.y, ts: targetView.scale, tx: targetView.x, ty: targetView.y }
+    }
+    for (let i = 0; i < next.length; i++) {
+      next[i].x = froms[i].x
+      next[i].y = froms[i].y
+      next[i].h = froms[i].h
+    }
+    cards = next
+  } else {
+    cards = next
+    tween = null
+    Object.assign(view, targetView)
   }
 
-  function heartIntervals(y) {
-    const P = HEART, L = P.length;
-    const xs = [];
-    for (let i = 0; i < L; i++) {
-      const p1 = P[i], p2 = P[(i + 1) % L];
-      const y1 = p1[1], y2 = p2[1];
-      if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
-        const k = (y - y1) / (y2 - y1);
-        xs.push(p1[0] + k * (p2[0] - p1[0]));
-      }
-    }
-    xs.sort(function (a, b) { return a - b; });
-    const out = [];
-    for (let i = 0; i + 1 < xs.length; i += 2) out.push([xs[i], xs[i + 1]]);
-    return out;
-  }
+  for (const c of cards) getImage(c.data.url)
+}
 
-  /* ---- 预计算 y → 水平区间表，供列扫描快速查询 ---- */
-  const Y_TABLE = (function () {
-    const N = 520, arr = [];
-    for (let i = 0; i < N; i++) {
-      const y = HY_MIN + (HY_MAX - HY_MIN) * i / (N - 1);
-      arr.push({ y: y, spans: heartIntervals(y) });
-    }
-    return arr;
-  })();
+function computeFitView() {
+  const W = canvas.clientWidth || 1
+  const H = canvas.clientHeight || 1
+  const pad = 0.06
+  let s = Math.min(W * (1 - pad * 2) / worldBounds.w, H * (1 - pad * 2) / worldBounds.h)
+  s = Math.max(MIN_SCALE, Math.min(s, MAX_SCALE))
+  return { scale: s, x: 0, y: 0 }
+}
 
-  /* =========================================================
-   *  4. 卡片几何：宽度统一，高度随图片比例自适应
-   * ========================================================= */
+function clampView() {
+  const W = canvas.clientWidth || 1
+  const H = canvas.clientHeight || 1
+  const maxX = Math.max(0, (worldBounds.w * view.scale - W) / 2)
+  const maxY = Math.max(0, (worldBounds.h * view.scale - H) / 2)
+  view.x = Math.max(-maxX, Math.min(maxX, view.x))
+  view.y = Math.max(-maxY, Math.min(maxY, view.y))
+}
 
-  /** 卡片总高度（给定卡片宽度 w 与该图宽高比） */
-  function cardH(w, aspect) {
-    const imgW = w * (1 - IN.pad * 2);
-    const textH = w * IN.lineH * IN.maxLines;
-    const timeH = w * IN.timeLineH;                 // ★ 时间行
-    return w * IN.pad * 2 + imgW / aspect + w * IN.gap + textH + timeH;
-  }
+function scheduleRebuild() {
+  if (rebuildTimer) clearTimeout(rebuildTimer)
+  rebuildTimer = setTimeout(() => {
+    rebuildTimer = null
+    if (destroyed) return
+    build(true)
+    requestRender()
+  }, 140)
+}
 
-  /** 间距随卡片大小动态变化 */
-  function gapFor(w) {
-    return 0.00 + 0.060 * w;
-  }
+function requestRender() {
+  if (rafPending) return
+  rafPending = true
+  rafId = requestAnimationFrame(onFrame)
+}
 
-  /* =========================================================
-   *  5. 列式瀑布流布局
-   * ========================================================= */
-
-  /** 给定列中心 cx 与半宽 halfW，返回该列「能完整容纳」的 y 区间 [yb, yt] */
-  function columnRange(cx, halfW) {
-    const left = cx - halfW;
-    const right = cx + halfW;
-    let yt = -Infinity, yb = Infinity;
-    for (let i = 0; i < Y_TABLE.length; i++) {
-      const sp = Y_TABLE[i].spans;
-      for (let s = 0; s < sp.length; s++) {
-        if (sp[s][0] <= left && right <= sp[s][1]) {
-          const y = Y_TABLE[i].y;
-          if (y > yt) yt = y;
-          if (y < yb) yb = y;
-          break;
-        }
-      }
-    }
-    return { yt: yt, yb: yb };
-  }
-
-  /** 按卡片宽度生成若干竖直列 */
-  function buildColumns(w, gx) {
-    const halfW = w / 2;
-    let n = Math.floor((2 + gx) / (w + gx));
-    if (n < 1) n = 1;
-
-    const totalW = n * w + (n - 1) * gx;
-    const x0 = -totalW / 2 + halfW;
-
-    const cols = [];
-    for (let i = 0; i < n; i++) {
-      const cx = x0 + i * (w + gx);
-      const r = columnRange(cx, halfW);
-      if (!isFinite(r.yt) || !isFinite(r.yb)) continue;
-      if (r.yt - r.yb < w * 0.45) continue;   // 太短的列直接跳过
-      cols.push({ cx: cx, yt: r.yt, yb: r.yb });
-    }
-    return cols;
-  }
-
-  /**
-   * 依次放置每张卡片：挑「当前可用高度最高、且能放下」的列，
-   * 使各列填充进度趋于均衡，轮廓贴合心形。
-   */
-  function packColumns(cols, heights, gy) {
-    const cursors = cols.map(function (c) { return c.yt; });
-    const out = [];
-
-    for (let k = 0; k < heights.length; k++) {
-      const h = heights[k];
-      let best = -1, bestCursor = -Infinity;
-
-      for (let i = 0; i < cols.length; i++) {
-        const top = cursors[i] - h;
-        if (top < cols[i].yb) continue;          // 这一列放不下
-        if (cursors[i] > bestCursor) {
-          bestCursor = cursors[i];
-          best = i;
-        }
-      }
-      if (best < 0) return null;                 // 放不下了
-
-      const cy = cursors[best] - h / 2;
-      out.push({ col: best, cy: cy, h: h });
-      cursors[best] = cy - h / 2 - gy;           // 光标下移
-    }
-    return out;
-  }
-
-  /* =========================================================
-   *  6. 求解卡片宽度：能放下全部照片的最大宽度
-   * ========================================================= */
-  const CARD_W_MAX = 0.34;
-
-  function solveLayout(n) {
-    function fits(w) {
-      const g = gapFor(w);
-      const cols = buildColumns(w, g);
-      if (cols.length === 0) return false;
-      const heights = ASPECTS.map(function (a) { return cardH(w, a); });
-      const res = packColumns(cols, heights, g);
-      return res !== null && res.length >= n;
-    }
-
-    let lo = 0.02;
-    let guard = 0;
-    while (!fits(lo) && lo > 0.004 && guard++ < 40) lo *= 0.8;
-    if (!fits(lo)) {
-      return { w: 0.012, cols: [], placements: null };
-    }
-
-    let hi = 1.0;
-    for (let i = 0; i < 40; i++) {
-      const mid = (lo + hi) / 2;
-      if (fits(mid)) lo = mid; else hi = mid;
-    }
-
-    let w = Math.min(lo, CARD_W_MAX);
-    guard = 0;
-    while (!fits(w) && w > 0.006 && guard++ < 40) w *= 0.9;
-
-    const g = gapFor(w);
-    const cols = buildColumns(w, g);
-    const heights = ASPECTS.map(function (a) { return cardH(w, a); });
-    const placements = packColumns(cols, heights, g);
-
-    return { w: w, cols: cols, placements: placements };
-  }
-
-  /* =========================================================
-   *  7. 画布 / 视图状态
-   * ========================================================= */
-  const canvas = document.getElementById('cv');
-  const ctx = canvas.getContext('2d');
-
-  const view = { scale: 1, x: 0, y: 0 };
-  let dpr = 1;
-
-  let CARD_W = 100;
-  let MAX_CARD_H = 100;
-  let cards = [];
-  let worldBounds = { w: 1, h: 1 };
-  let userInteracted = false;
-
-  /* ---------------------------------------------------------
-   *  ★ 布局补间：图片陆续加载导致布局变化时，卡片平滑过渡
-   * --------------------------------------------------------- */
-  let tween = null;                 // 当前补间状态
-  const TWEEN_MS = 620;             // 补间时长
-
-  function easeInOutCubic(t) {
-    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
-  }
-
-  /** 把某条补间推进到进度 e（0~1），直接写回 cards 与 view */
-  function applyTweenProgress(ts, e) {
-    for (let i = 0; i < ts.cards.length; i++) {
-      const s = ts.cards[i];
-      const c = cards[i];
-      if (!c || !s) continue;
-      c.x = s.fx + (s.tx - s.fx) * e;
-      c.y = s.fy + (s.ty - s.fy) * e;
-      c.h = s.fh + (s.th - s.fh) * e;
-    }
-    const v = ts.view;
-    if (v) {
-      view.scale = v.fs + (v.ts - v.fs) * e;
-      view.x     = v.fx + (v.tx - v.fx) * e;
-      view.y     = v.fy + (v.ty - v.fy) * e;
-    }
-  }
-
-  function stepTween(now) {
-    if (!tween) return;
-    const p = (now - tween.t0) / tween.dur;
+function onFrame(now: number) {
+  rafPending = false
+  rafId = 0
+  if (tween) {
+    const p = (now - tween.t0) / tween.dur
     if (p >= 1) {
-      const ts = tween;
-      tween = null;
-      applyTweenProgress(ts, 1);      // 精确落到终点
+      applyTween(1); tween = null
     } else {
-      applyTweenProgress(tween, easeInOutCubic(p));
+      const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2
+      applyTween(e)
     }
   }
+  render()
+  if (tween) requestRender()
+}
 
-  /** 立即结束补间（用户开始操作时调用，避免和手势打架） */
-  function finishTween() {
-    if (!tween) return;
-    const ts = tween;
-    tween = null;
-    applyTweenProgress(ts, 1);
+function applyTween(e: number) {
+  for (let i = 0; i < tween.cards.length; i++) {
+    const s = tween.cards[i]
+    const c = cards[i]
+    if (!c || !s) continue
+    c.x = s.fx + (s.tx - s.fx) * e
+    c.y = s.fy + (s.ty - s.fy) * e
+    c.h = s.fh + (s.th - s.fh) * e
   }
+  const v = tween.view
+  view.scale = v.fs + (v.ts - v.fs) * e
+  view.x = v.fx + (v.tx - v.fx) * e
+  view.y = v.fy + (v.ty - v.fy) * e
+}
 
-  /* =========================================================
-   *  8. 绘图工具
-   * ========================================================= */
-  function roundRect(g, x, y, w, h, r) {
-    r = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
-    g.beginPath();
-    g.moveTo(x + r, y);
-    g.arcTo(x + w, y, x + w, y + h, r);
-    g.arcTo(x + w, y + h, x, y + h, r);
-    g.arcTo(x, y + h, x, y, r);
-    g.arcTo(x, y, x + w, y, r);
-    g.closePath();
+function render() {
+  const cssW = canvas.clientWidth
+  const cssH = canvas.clientHeight
+  if (!cssW || !cssH) return
+  const nextDpr = window.devicePixelRatio || 1
+  const bw = Math.round(cssW * nextDpr)
+  const bh = Math.round(cssH * nextDpr)
+  if (canvas.width !== bw || canvas.height !== bh) {
+    canvas.width = bw; canvas.height = bh
   }
+  dpr = nextDpr
 
-  function drawContain(g, img, x, y, w, h) {
-    const iw = img.naturalWidth || img.width;
-    const ih = img.naturalHeight || img.height;
-    if (!iw || !ih || w <= 0 || h <= 0) return;
+  ctx.setTransform(1, 0, 0, 1, 0, 0)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    const s = Math.min(w / iw, h / ih);
-    const dw = iw * s;
-    const dh = ih * s;
-    g.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+  const g = ctx.createRadialGradient(cssW / 2, cssH * 0.44, 0, cssW / 2, cssH * 0.44, Math.max(cssW, cssH) * 0.86)
+  g.addColorStop(0, '#FFFDF9')
+  g.addColorStop(1, '#F6EDE1')
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, cssW, cssH)
+
+  ctx.save()
+  ctx.translate(cssW / 2 + view.x, cssH / 2 + view.y)
+  ctx.scale(view.scale, view.scale)
+
+  const camX = -view.x / view.scale
+  const camY = -view.y / view.scale
+  const limitX = cssW / 2 / view.scale + CARD_W
+  const limitY = cssH / 2 / view.scale + MAX_CARD_H
+
+  for (const c of cards) {
+    if (Math.abs(c.x - camX) > limitX) continue
+    if (Math.abs(c.y - camY) > limitY) continue
+    const rec = imgCache.get(c.data.url)
+    drawCard(ctx, c, CARD_W, view, rec?.loaded ? rec.img : null)
   }
-
-  /* ------- 文字换行缓存 ------- */
-  const measureCanvas = document.createElement('canvas');
-  const measureCtx = measureCanvas.getContext('2d');
-  const textCache = new Map();
-
-  function wrapText(text, maxWidth, fs) {
-    const key = fs.toFixed(3) + '|' + Math.round(maxWidth) + '|' + text;
-    const hit = textCache.get(key);
-    if (hit) return hit;
-
-    measureCtx.font = fs + 'px ' + FONT_FAMILY;
-    const chars = Array.from(text);
-    const lines = [];
-    let cur = '';
-
-    for (let i = 0; i < chars.length; i++) {
-      const ch = chars[i];
-      if (cur === '') { cur = ch; continue; }
-
-      if (measureCtx.measureText(cur + ch).width <= maxWidth) {
-        cur += ch;
-      } else {
-        lines.push(cur);
-        cur = ch;
-        if (lines.length === IN.maxLines - 1) {
-          let rest = chars.slice(i).join('');
-          if (measureCtx.measureText(rest).width > maxWidth) {
-            while (rest.length > 1 &&
-                   measureCtx.measureText(rest + '…').width > maxWidth) {
-              rest = rest.slice(0, -1);
-            }
-            rest += '…';
-          }
-          lines.push(rest);
-          textCache.set(key, lines);
-          return lines;
-        }
-      }
-    }
-    if (cur) lines.push(cur);
-    textCache.set(key, lines);
-    return lines;
-  }
-
-  /* ------- 图片缓存 ------- */
-  const imgCache = new Map();
-
-  function getImage(url) {
-    let rec = imgCache.get(url);
-    if (rec) return rec;
-
-    rec = { loaded: false, img: null };
-    imgCache.set(url, rec);
-
-    const im = new Image();
-    im.crossOrigin = 'anonymous';
-    im.onload = function () {
-      rec.loaded = true;
-      rec.img = im;
-
-      const iw = im.naturalWidth || im.width;
-      const ih = im.naturalHeight || im.height;
-      if (iw > 0 && ih > 0) {
-        const a = iw / ih;
-        const prev = aspectCache.get(url);
-        if (prev === undefined || Math.abs(prev - a) > 1e-4) {
-          aspectCache.set(url, a);
-          scheduleRebuild();               // 触发平滑重排
-        }
-      }
-      requestRender();
-    };
-    im.onerror = function () { rec.loaded = false; };
-    im.src = '/vlog/' + url;
-    return rec;
-  }
-
-  /* =========================================================
-   *  9. 绘制单张卡片
-   * ========================================================= */
-  function drawCard(c) {
-    const cw = CARD_W;
-    const ch = c.h;
-    const px = cw * view.scale;
-
-    const left = c.x - cw * 0.5;
-    const top  = c.y - ch * 0.5;
-
-    const pad = cw * IN.pad;
-    const imgW = cw - pad * 2;
-    const aspect = aspectOf(c.data.url);
-    const imgH = imgW / aspect;
-    const gap = cw * IN.gap;
-    const rad = cw * IN.radius;
-    const imgRad = cw * IN.imgRadius;
-
-    /* ---- 卡片底 + 阴影 ---- */
-    ctx.save();
-    if (px > 9) {
-      ctx.shadowColor = STYLE.shadowColor;
-      ctx.shadowBlur = cw * 0.13;
-      ctx.shadowOffsetY = cw * 0.055;
-    }
-    ctx.fillStyle = STYLE.cardBg;
-    roundRect(ctx, left, top, cw, ch, rad);
-    ctx.fill();
-    ctx.restore();
-
-    /* ---- 图片 ---- */
-    const ix = left + pad;
-    const iy = top + pad;
-
-    ctx.save();
-    roundRect(ctx, ix, iy, imgW, imgH, imgRad);
-    ctx.clip();
-
-    ctx.fillStyle = STYLE.imgBg;
-    ctx.fillRect(ix, iy, imgW, imgH);
-
-    const rec = getImage(c.data.url);
-    if (rec.loaded && rec.img) {
-      drawContain(ctx, rec.img, ix, iy, imgW, imgH);
-    } else {
-      ctx.fillStyle = STYLE.imgPlaceholderInk;
-      const cx0 = ix + imgW / 2;
-      const cy0 = iy + imgH / 2;
-      ctx.beginPath();
-      ctx.arc(cx0, cy0 - imgH * 0.12, imgW * 0.22, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.moveTo(cx0 - imgW * 0.32, cy0 + imgH * 0.22);
-      ctx.quadraticCurveTo(cx0, cy0 - imgH * 0.10, cx0 + imgW * 0.32, cy0 + imgH * 0.22);
-      ctx.closePath();
-      ctx.fill();
-    }
-    ctx.restore();
-
-    /* ---- 文案 + 时间 ---- */
-    if (px < 18) return;
-
-    const fs = cw * IN.fontSize;
-    const lineH = cw * IN.lineH;
-    const textTop = iy + imgH + gap;
-    const textAreaH = lineH * IN.maxLines;
-
-    /* 文案（在文字区内垂直居中，最多 maxLines 行，超出省略号） */
-    ctx.save();
-    ctx.font = fs + 'px ' + FONT_FAMILY;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = STYLE.textColor;
-
-    const full = '\u201C' + c.data.text + '\u201D';
-    const lines = wrapText(full, imgW * 0.96, fs);
-    const totalH = lines.length * lineH;
-    const startY = textTop + (textAreaH - totalH) / 2 + lineH / 2;
-
-    for (let i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], c.x, startY + i * lineH);
-    }
-    ctx.restore();
-
-    /* ★ 时间（固定卡片右下角，使用 alphabetic 基线，留出底部内边距） */
-    if (c.date) {
-      const tfs = cw * IN.timeFontSize;
-      if (tfs > 0.5) {
-        ctx.save();
-        ctx.font = tfs + 'px ' + FONT_FAMILY;
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillStyle = STYLE.timeColor;
-        const timeY = top + ch - cw * IN.timePadBottom;
-        ctx.fillText(c.date, left + cw - cw * IN.timePadBottom, timeY);
-        ctx.restore();
-      }
-    }
-  }
-
-  /* =========================================================
-   * 10. 渲染（带补间循环）
-   * ========================================================= */
-  let rafPending = false;
-
-  function requestRender() {
-    if (rafPending) return;
-    rafPending = true;
-    requestAnimationFrame(onFrame);
-  }
-
-  function onFrame(now) {
-    rafPending = false;
-
-    if (tween) stepTween(now);        // 先把补间推进到「现在」
-    render();
-    if (tween) requestRender();       // 补间未结束 → 继续下一帧
-  }
-
-  function syncCanvasSize() {
-    const cssW = canvas.clientWidth;
-    const cssH = canvas.clientHeight;
-    if (!cssW || !cssH) return false;
-
-    const nextDpr = window.devicePixelRatio || 1;
-    const bw = Math.max(1, Math.round(cssW * nextDpr));
-    const bh = Math.max(1, Math.round(cssH * nextDpr));
-
-    if (canvas.width !== bw || canvas.height !== bh) {
-      canvas.width = bw;
-      canvas.height = bh;
-    }
-    dpr = nextDpr;
-    return true;
-  }
-
-  function render() {
-    if (!syncCanvasSize()) return;
-
-    const W = canvas.clientWidth;
-    const H = canvas.clientHeight;
-
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const g = ctx.createRadialGradient(
-      W / 2, H * 0.44, 0,
-      W / 2, H * 0.44, Math.max(W, H) * 0.86
-    );
-    g.addColorStop(0, STYLE.bgInner);
-    g.addColorStop(1, STYLE.bgOuter);
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-
-    ctx.save();
-    ctx.translate(W / 2 + view.x, H / 2 + view.y);
-    ctx.scale(view.scale, view.scale);
-
-    const camX = -view.x / view.scale;
-    const camY = -view.y / view.scale;
-    const limitX = W / 2 / view.scale + CARD_W;
-    const limitY = H / 2 / view.scale + MAX_CARD_H;
-
-    for (let i = 0; i < cards.length; i++) {
-      const c = cards[i];
-      if (Math.abs(c.x - camX) > limitX) continue;
-      if (Math.abs(c.y - camY) > limitY) continue;
-      drawCard(c);
-    }
-
-    ctx.restore();
-  }
-
-  /* =========================================================
-   * 11. 视图适配
-   * ========================================================= */
-  function computeFitView() {
-    const W = canvas.clientWidth || 1;
-    const H = canvas.clientHeight || 1;
-    const padRatio = 0.06;
-    const availW = W * (1 - padRatio * 2);
-    const availH = H * (1 - padRatio * 2);
-
-    let s = Math.min(availW / worldBounds.w, availH / worldBounds.h);
-    s = Math.max(MIN_SCALE, Math.min(s, MAX_SCALE));
-
-    return { scale: s, x: 0, y: 0 };
-  }
-
-  function resize() { requestRender(); }
-
-  /* =========================================================
-   * 12. 交互
-   * ========================================================= */
-  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
-
-  canvas.addEventListener('wheel', function (e) {
-    e.preventDefault();
-    userInteracted = true;
-    finishTween();
-
-    const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left - rect.width / 2;
-    const my = e.clientY - rect.top - rect.height / 2;
-
-    const factor = Math.exp(-e.deltaY * 0.0016);
-    const ns = clamp(view.scale * factor, MIN_SCALE, MAX_SCALE);
-    const k = ns / view.scale;
-
-    view.x = mx - (mx - view.x) * k;
-    view.y = my - (my - view.y) * k;
-    view.scale = ns;
-    requestRender();
-  }, { passive: false });
-
-  const pointers = new Map();
-  let pinch = null;
-
-  function pinchInfo() {
-    const arr = Array.from(pointers.values());
-    if (arr.length < 2) return null;
-    const dx = arr[0].x - arr[1].x;
-    const dy = arr[0].y - arr[1].y;
-    return {
-      dist: Math.sqrt(dx * dx + dy * dy),
-      cx: (arr[0].x + arr[1].x) / 2,
-      cy: (arr[0].y + arr[1].y) / 2
-    };
-  }
-
-  canvas.addEventListener('pointerdown', function (e) {
-    userInteracted = true;
-    finishTween();                     // 手势优先，补间立即收尾
-    try { canvas.setPointerCapture(e.pointerId); } catch (err) {}
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pointers.size === 2) pinch = pinchInfo();
-    canvas.classList.add('dragging');
-  });
-
-  canvas.addEventListener('pointermove', function (e) {
-    const p = pointers.get(e.pointerId);
-    if (!p) return;
-
-    const nx = e.clientX, ny = e.clientY;
-
-    if (pointers.size === 1) {
-      view.x += nx - p.x;
-      view.y += ny - p.y;
-      p.x = nx; p.y = ny;
-      requestRender();
-      return;
-    }
-
-    if (pointers.size === 2) {
-      p.x = nx; p.y = ny;
-      const cur = pinchInfo();
-      if (pinch && cur && pinch.dist > 0) {
-        const rect = canvas.getBoundingClientRect();
-        const mx = cur.cx - rect.left - rect.width / 2;
-        const my = cur.cy - rect.top - rect.height / 2;
-
-        const ns = clamp(view.scale * (cur.dist / pinch.dist), MIN_SCALE, MAX_SCALE);
-        const k = ns / view.scale;
-        view.x = mx - (mx - view.x) * k;
-        view.y = my - (my - view.y) * k;
-        view.scale = ns;
-      }
-      pinch = cur;
-      requestRender();
-    }
-  });
-
-  function endPointer(e) {
-    pointers.delete(e.pointerId);
-    if (pointers.size < 2) pinch = null;
-    if (pointers.size === 0) canvas.classList.remove('dragging');
-    try { canvas.releasePointerCapture(e.pointerId); } catch (err) {}
-  }
-
-  canvas.addEventListener('pointerup', endPointer);
-  canvas.addEventListener('pointercancel', endPointer);
-  canvas.addEventListener('pointerleave', function (e) {
-    if (pointers.has(e.pointerId)) endPointer(e);
-  });
-
-  /* =========================================================
-   * 13. 构建布局（含补间）
-   * ========================================================= */
-  let rebuildTimer = null;
-
-  function scheduleRebuild() {
-    if (rebuildTimer) clearTimeout(rebuildTimer);
-    rebuildTimer = setTimeout(function () {
-      rebuildTimer = null;
-      build({ animate: true });
-      requestRender();
-    }, 140);
-  }
-
-  /**
-   * opts.animate : 是否让卡片从旧位置平滑滑动到新位置
-   */
-  function build(opts) {
-    opts = opts || {};
-    const wantAnim = !!opts.animate && cards.length > 0;
-
-    /* ---- 记录旧状态（作为补间起点） ---- */
-    const prevPos = cards.map(function (c) {
-      return { x: c.x, y: c.y, h: c.h };
-    });
-    const prevView = { x: view.x, y: view.y, scale: view.scale };
-
-    refreshAspects();
-
-    const N = Math.max(1, PHOTOS.length);
-    const solved = solveLayout(N);
-
-    const unitW = solved.w;
-    CARD_W = unitW * WORLD_SCALE;
-
-    let cols = solved.cols;
-    let placements = solved.placements;
-
-    if (!placements || !placements.length) {
-      /* 兜底：单张居中 */
-      cols = [{ cx: 0 }];
-      placements = [{ col: 0, cy: 0, h: cardH(unitW, ASPECTS[0] || IMG_ASPECT) }];
-    }
-
-    const next = placements.map(function (p, i) {
-      const col = cols[p.col] || { cx: 0 };
-      const photo = PHOTOS[i % PHOTOS.length];
-      return {
-        x: col.cx * WORLD_SCALE,
-        y: -p.cy * WORLD_SCALE,
-        h: p.h * WORLD_SCALE,
-        data: photo,
-        date: dateFromUrl(photo.url)        // ★ 图片名解析出的日期
-      };
-    });
-
-    /* ---- 包围盒 + 居中 ---- */
-    const hw = CARD_W / 2;
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    for (let i = 0; i < next.length; i++) {
-      const c = next[i];
-      const hh = c.h / 2;
-      if (c.x - hw < minX) minX = c.x - hw;
-      if (c.x + hw > maxX) maxX = c.x + hw;
-      if (c.y - hh < minY) minY = c.y - hh;
-      if (c.y + hh > maxY) maxY = c.y + hh;
-    }
-
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    for (let i = 0; i < next.length; i++) {
-      next[i].x -= cx;
-      next[i].y -= cy;
-    }
-
-    worldBounds = {
-      w: Math.max(1, maxX - minX),
-      h: Math.max(1, maxY - minY)
-    };
-
-    /* ---- 最大卡片高度（含旧值，保证补间期间裁剪不误伤） ---- */
-    let maxH = 0;
-    for (let i = 0; i < next.length; i++) if (next[i].h > maxH) maxH = next[i].h;
-    for (let i = 0; i < prevPos.length; i++) if (prevPos[i].h > maxH) maxH = prevPos[i].h;
-    MAX_CARD_H = maxH > 0 ? maxH : CARD_W;
-
-    /* ---- 视图目标 ---- */
-    const targetView = userInteracted
-      ? { scale: view.scale, x: view.x, y: view.y }   // 用户已操作过，不强行回正
-      : computeFitView();
-
-    /* ---- 落地：平滑过渡 or 直接设置 ---- */
-    if (wantAnim) {
-      const froms = next.map(function (c, i) {
-        const p = prevPos[i];
-        return p ? { x: p.x, y: p.y, h: p.h }
-                 : { x: c.x, y: c.y, h: c.h };
-      });
-
-      tween = {
-        t0: performance.now(),
-        dur: TWEEN_MS,
-        cards: next.map(function (c, i) {
-          return {
-            fx: froms[i].x, fy: froms[i].y, fh: froms[i].h,
-            tx: c.x,        ty: c.y,        th: c.h
-          };
-        }),
-        view: {
-          fs: prevView.scale, fx: prevView.x, fy: prevView.y,
-          ts: targetView.scale, tx: targetView.x, ty: targetView.y
-        }
-      };
-
-      /* 卡片先摆到旧位置，随后由 stepTween 逐帧推进 */
-      for (let i = 0; i < next.length; i++) {
-        next[i].x = froms[i].x;
-        next[i].y = froms[i].y;
-        next[i].h = froms[i].h;
-      }
-      cards = next;
-    } else {
-      cards = next;
-      tween = null;
-      view.scale = targetView.scale;
-      view.x = targetView.x;
-      view.y = targetView.y;
-    }
-
-    for (let i = 0; i < cards.length; i++) getImage(cards[i].data.url);
-  }
-
-  /* =========================================================
-   * 14. 初始化
-   * ========================================================= */
-  function init() {
-    dpr = window.devicePixelRatio || 1;
-
-    build({ animate: false });     // 首屏直接落位，不做补间
-    requestRender();
-
-    window.addEventListener('resize', resize);
-    window.addEventListener('orientationchange', resize);
-
-    if (window.visualViewport) {
-      window.visualViewport.addEventListener('resize', resize);
-      window.visualViewport.addEventListener('scroll', resize);
-    }
-
-    window.addEventListener('orientationchange', function () {
-      setTimeout(resize, 260);
-    });
-
-    try {
-      const link = document.createElement('link');
-      link.rel = 'stylesheet';
-      link.href = 'https://fonts.googleapis.com/css2?family=ZCOOL+KuaiLe&display=swap';
-      document.head.appendChild(link);
-
-      if (document.fonts && document.fonts.ready) {
-        document.fonts.ready.then(function () {
-          textCache.clear();
-          requestRender();
-        });
-      }
-    } catch (e) { /* 忽略 */ }
-  }
-
-  init();
+  ctx.restore()
+}
+
+function onResize() {
+  if (!userInteracted) Object.assign(view, computeFitView())
+  else clampView()
+  requestRender()
+}
+
+onMounted(async () => {
+  canvas = canvasRef.value!
+  ctx = canvas.getContext('2d')!
+  dpr = window.devicePixelRatio || 1
+
+  unbind = bindGestures(canvas, view, {
+    onUpdate: requestRender,
+    onStart: () => { userInteracted = true; tween = null },
+    clampView
+  })
+
+  window.addEventListener('resize', onResize)
+
+  build(false)
+  requestRender()
+
+  await preloadAll()
+  if (destroyed) return
+  build(true)
+  requestRender()
+})
+
+onBeforeUnmount(() => {
+  destroyed = true
+  unbind?.()
+  if (rebuildTimer) clearTimeout(rebuildTimer)
+  if (rafPending && rafId) cancelAnimationFrame(rafId)
+  window.removeEventListener('resize', onResize)
+  imgCache.clear()
+  cards = []
+  tween = null
 })
 </script>
 
 <style>
-  canvas#cv {
-    position: fixed;
-    top: var(--vp-nav-height); /* 导航栏高度 */
-    left: 0;
-    width: 100%;
-    height: 100%;
-    display: block;
-    cursor: grab;
-    background: #FDF7F0;
-    touch-action: none;
-  }
-  canvas#cv.dragging { cursor: grabbing; }
+canvas#cv {
+  position: fixed;
+  top: var(--vp-nav-height);
+  left: 0;
+  width: 100%;
+  height: calc(100dvh - var(--vp-nav-height));
+  display: block;
+  cursor: grab;
+  background: #FDF7F0;
+  touch-action: none;
+}
+canvas#cv.dragging { cursor: grabbing; }
 </style>
