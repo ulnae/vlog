@@ -15,8 +15,19 @@ export interface View {
   y: number
 }
 
-const measureCanvas = document.createElement('canvas')
-const measureCtx = measureCanvas.getContext('2d')!
+// 顶层不再访问 document
+let measureCanvas: HTMLCanvasElement | null = null
+let measureCtx: CanvasRenderingContext2D | null = null
+
+function getMeasureCtx(): CanvasRenderingContext2D | null {
+  if (typeof document === 'undefined') return null   // SSR 守卫
+  if (!measureCtx) {
+    measureCanvas = document.createElement('canvas')
+    measureCtx = measureCanvas.getContext('2d')
+  }
+  return measureCtx
+}
+
 const textCache = new Map<string, string[]>()
 
 function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
@@ -40,7 +51,15 @@ function wrapText(text: string, maxWidth: number, fs: number): string[] {
   const hit = textCache.get(key)
   if (hit) return hit
 
-  measureCtx.font = `${fs}px ${FONT_FAMILY}`
+  const ctx = getMeasureCtx()
+  if (!ctx) {
+    // SSR 阶段：没有 canvas 无法测量，返回单行兜底
+    const fallback = [text]
+    textCache.set(key, fallback)
+    return fallback
+  }
+
+  ctx.font = `${fs}px ${FONT_FAMILY}`
   const chars = Array.from(text)
   const lines: string[] = []
   let cur = ''
@@ -48,14 +67,14 @@ function wrapText(text: string, maxWidth: number, fs: number): string[] {
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i]
     if (cur === '') { cur = ch; continue }
-    if (measureCtx.measureText(cur + ch).width <= maxWidth) {
+    if (ctx.measureText(cur + ch).width <= maxWidth) {
       cur += ch
     } else {
       lines.push(cur)
       cur = ch
       if (lines.length === IN.maxLines - 1) {
         let rest = chars.slice(i).join('')
-        while (rest.length > 1 && measureCtx.measureText(rest + '…').width > maxWidth) {
+        while (rest.length > 1 && ctx.measureText(rest + '…').width > maxWidth) {
           rest = rest.slice(0, -1)
         }
         lines.push(rest + '…')
