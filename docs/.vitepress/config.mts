@@ -129,6 +129,7 @@ export default defineConfig({
           text: '4月',
           collapsed: true,
           items: [
+            { text: '20', link: '/2026/04/20' },
             { text: '30', link: '/2026/04/30' },
           ]
         },
@@ -159,6 +160,13 @@ export default defineConfig({
             { text: '08', link: '/2026/07/08' },
             { text: '09', link: '/2026/07/09' },
             { text: '13', link: '/2026/07/13' },
+          ]
+        },
+        {
+          text: '8月',
+          collapsed: true,
+          items: [
+            { text: '02', link: '/2026/08/02' },
           ]
         },
         {
