@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress'
+import { fileURLToPath, URL } from 'node:url'
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
@@ -259,7 +260,7 @@ export default defineConfig({
   markdown: {
     image: {
       // 默认禁用；设置为 true 可为所有图片启用懒加载。
-      lazyLoad: true,
+      lazyLoad: true
     },
     // lineNumbers: true
 
@@ -288,6 +289,18 @@ export default defineConfig({
             ],
           },
         },
+      },
+    },
+    resolve: {
+      alias: {
+        // docs/.vitepress/theme
+        '@theme': fileURLToPath(new URL('./theme', import.meta.url)),
+
+        // docs/.vitepress/theme/utils
+        '@utils': fileURLToPath(new URL('./theme/utils', import.meta.url)),
+
+        // docs 目录
+        '@docs': fileURLToPath(new URL('../', import.meta.url)),
       },
     },
   }

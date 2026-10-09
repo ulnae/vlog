@@ -7,11 +7,11 @@ footer: false
 
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount } from 'vue'
-import { PHOTOS, photoUrl, dateFromUrl } from './.vitepress/theme/utils/photos'
-import { IMG_ASPECT, MIN_SCALE, MAX_SCALE, TWEEN_MS, WORLD_SCALE } from './.vitepress/theme/utils/constants'
-import { solveLayout, worldUnits } from './.vitepress/theme/utils/layout'
-import { drawCard, type Card } from './.vitepress/theme/utils/renderer'
-import { bindGestures } from './.vitepress/theme/utils/gestures'
+import { PHOTOS, photoUrl, dateFromUrl } from '@utils/photos'
+import { IMG_ASPECT, MIN_SCALE, MAX_SCALE, TWEEN_MS, WORLD_SCALE } from '@utils/constants'
+import { solveLayout, worldUnits } from '@utils/layout'
+import { drawCard, type Card } from '@utils/renderer'
+import { bindGestures } from '@utils/gestures'
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let canvas: HTMLCanvasElement
