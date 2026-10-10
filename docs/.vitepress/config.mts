@@ -14,7 +14,11 @@ export default defineConfig({
     [
       'link',
       { rel: 'icon', href: '/vlog/ico.svg' }
-    ]
+    ],
+    [
+      'link',
+      { rel: 'stylesheet', href: 'https://fonts.googleapis.com/css2?family=ZCOOL+KuaiLe&display=swap' }
+    ],
   ],
   cleanUrls: true,
   lastUpdated: true,
