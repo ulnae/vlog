@@ -6,12 +6,14 @@ footer: false
 <canvas ref="canvasRef" id="cv"></canvas>
 
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue'
+import { useData } from 'vitepress'
+import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { PHOTOS, photoUrl, dateFromUrl } from '@utils/photos'
-import { IMG_ASPECT, MIN_SCALE, MAX_SCALE, TWEEN_MS, WORLD_SCALE } from '@utils/constants'
+import { IMG_ASPECT, MIN_SCALE, MAX_SCALE, TWEEN_MS, WORLD_SCALE, setStyleTheme } from '@utils/constants'
 import { solveLayout, worldUnits } from '@utils/layout'
 import { drawCard, type Card } from '@utils/renderer'
 import { bindGestures } from '@utils/gestures'
+const { isDark } = useData()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let canvas: HTMLCanvasElement
@@ -217,6 +219,7 @@ function applyTween(e: number) {
 }
 
 function render() {
+  if (!canvas || !ctx) return
   const cssW = canvas.clientWidth
   const cssH = canvas.clientHeight
   if (!cssW || !cssH) return
@@ -261,6 +264,9 @@ onMounted(async () => {
   ctx = canvas.getContext('2d')!
   dpr = window.devicePixelRatio || 1
 
+  // 先按当前主题上色，避免首帧是白色卡片
+  setStyleTheme(isDark.value)
+
   unbind = bindGestures(canvas, view, {
     onUpdate: requestRender,
     onStart: () => { userInteracted = true; tween = null },
@@ -287,6 +293,11 @@ onBeforeUnmount(() => {
   imgCache.clear()
   cards = []
   tween = null
+})
+
+watch(isDark, (dark) => {
+  setStyleTheme(dark)
+  requestRender()
 })
 </script>
 
