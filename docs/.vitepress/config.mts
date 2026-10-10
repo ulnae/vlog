@@ -13,14 +13,14 @@ export default defineConfig({
     ],
     [
       'link',
-      { rel: 'icon', href: '/vlog/siam.svg' }
+      { rel: 'icon', href: '/vlog/ico.svg' }
     ]
   ],
   cleanUrls: true,
   lastUpdated: true,
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
-    logo: '/siam.svg',
+    logo: '/ico.svg',
     siteTitle: '三文鱼',
     nav: [
       {
