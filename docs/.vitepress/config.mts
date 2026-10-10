@@ -3,7 +3,7 @@ import { fileURLToPath, URL } from 'node:url'
 
 // https://vitepress.dev/reference/site-config
 export default defineConfig({
-  title: "三文鱼",
+  title: "lsy",
   description: "Welcome！",
   base: '/vlog/',
   head: [
@@ -21,7 +21,7 @@ export default defineConfig({
   themeConfig: {
     // https://vitepress.dev/reference/default-theme-config
     logo: '/ico.svg',
-    siteTitle: '三文鱼',
+    siteTitle: '承霖',
     nav: [
       {
         text: '2025', link: '/2025/04/20', activeMatch: '/2025/'

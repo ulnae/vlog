@@ -5,7 +5,7 @@ layout: home
 hero:
   name: Y&L
   text: 欢迎🎉
-  tagline: 记录美好生活
+  tagline: 承天之佑 沛雨甘霖
   image:
     src: /siam.svg
     alt: 三文鱼
