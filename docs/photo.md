@@ -232,12 +232,6 @@ function render() {
   ctx.clearRect(0, 0, canvas.width, canvas.height)
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-  const g = ctx.createRadialGradient(cssW / 2, cssH * 0.44, 0, cssW / 2, cssH * 0.44, Math.max(cssW, cssH) * 0.86)
-  g.addColorStop(0, '#FFFDF9')
-  g.addColorStop(1, '#F6EDE1')
-  ctx.fillStyle = g
-  ctx.fillRect(0, 0, cssW, cssH)
-
   ctx.save()
   ctx.translate(cssW / 2 + view.x, cssH / 2 + view.y)
   ctx.scale(view.scale, view.scale)
@@ -305,7 +299,6 @@ canvas#cv {
   height: calc(100dvh - var(--vp-nav-height));
   display: block;
   cursor: grab;
-  background: #FDF7F0;
   touch-action: none;
 }
 canvas#cv.dragging { cursor: grabbing; }
