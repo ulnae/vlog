@@ -63,4 +63,4 @@ export const MIN_SCALE = 0.26
 export const MAX_SCALE = 16
 export const WORLD_SCALE = 500
 export const CARD_W_MAX = 0.34
-export const TWEEN_MS = 620
+export const TWEEN_MS = 1800
