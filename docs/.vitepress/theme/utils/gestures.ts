@@ -10,7 +10,13 @@ export interface GestureCallbacks {
   onUpdate: () => void
   onStart: () => void
   clampView: () => void
+  /** 单指轻点（没有发生拖动 / 缩放）时触发，坐标相对视口 */
+  onTap?: (clientX: number, clientY: number) => void
 }
+
+/** 轻点判定阈值 */
+const TAP_SLOP = 8   // px
+const TAP_MS = 400   // ms
 
 export function bindGestures(
   canvas: HTMLCanvasElement,
@@ -19,6 +25,7 @@ export function bindGestures(
 ): () => void {
   const pointers = new Map<number, { x: number; y: number }>()
   let pinch: { dist: number; cx: number; cy: number } | null = null
+  let tapStart: { id: number; x: number; y: number; t: number } | null = null
 
   function pinchInfo() {
     const arr = [...pointers.values()]
@@ -35,6 +42,7 @@ export function bindGestures(
   function onWheel(e: WheelEvent) {
     e.preventDefault()
     cb.onStart()
+    tapStart = null
     const rect = canvas.getBoundingClientRect()
     const mx = e.clientX - rect.left - rect.width / 2
     const my = e.clientY - rect.top - rect.height / 2
@@ -55,6 +63,10 @@ export function bindGestures(
     try { canvas.setPointerCapture(e.pointerId) } catch {}
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY })
     if (pointers.size === 2) pinch = pinchInfo()
+    // 一旦出现第二根手指，本次手势就不可能是「点击」
+    tapStart = pointers.size === 1
+      ? { id: e.pointerId, x: e.clientX, y: e.clientY, t: performance.now() }
+      : null
     canvas.classList.add('dragging')
   }
 
@@ -90,24 +102,37 @@ export function bindGestures(
     }
   }
 
-  function onUp(e: PointerEvent) {
+  function endPointer(e: PointerEvent, allowTap: boolean) {
+    const start = tapStart
     pointers.delete(e.pointerId)
     if (pointers.size < 2) pinch = null
     if (pointers.size === 0) canvas.classList.remove('dragging')
     try { canvas.releasePointerCapture(e.pointerId) } catch {}
+
+    if (
+      allowTap && start && start.id === e.pointerId && pointers.size === 0 &&
+      performance.now() - start.t <= TAP_MS &&
+      Math.hypot(e.clientX - start.x, e.clientY - start.y) <= TAP_SLOP
+    ) {
+      cb.onTap?.(e.clientX, e.clientY)
+    }
+    tapStart = null
   }
+
+  const onUp = (e: PointerEvent) => endPointer(e, true)
+  const onCancel = (e: PointerEvent) => endPointer(e, false)
 
   canvas.addEventListener('wheel', onWheel, { passive: false })
   canvas.addEventListener('pointerdown', onDown)
   canvas.addEventListener('pointermove', onMove)
   canvas.addEventListener('pointerup', onUp)
-  canvas.addEventListener('pointercancel', onUp)
+  canvas.addEventListener('pointercancel', onCancel)
 
   return () => {
     canvas.removeEventListener('wheel', onWheel)
     canvas.removeEventListener('pointerdown', onDown)
     canvas.removeEventListener('pointermove', onMove)
     canvas.removeEventListener('pointerup', onUp)
-    canvas.removeEventListener('pointercancel', onUp)
+    canvas.removeEventListener('pointercancel', onCancel)
   }
 }

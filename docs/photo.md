@@ -6,7 +6,7 @@ footer: false
 <canvas ref="canvasRef" id="cv"></canvas>
 
 <script setup lang="ts">
-import { useData } from 'vitepress'
+import { useData, withBase, useRouter } from 'vitepress'
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import { PHOTOS, thumbUrl, ASPECTS, dateFromUrl } from '@utils/photos'
 import type { Photo } from '@utils/photos'
@@ -15,6 +15,7 @@ import { solveLayout, worldUnits } from '@utils/layout'
 import { drawCard, type Card } from '@utils/renderer'
 import { bindGestures } from '@utils/gestures'
 const { isDark } = useData()
+const router = useRouter()
 
 const canvasRef = ref<HTMLCanvasElement | null>(null)
 let canvas: HTMLCanvasElement
@@ -175,6 +176,54 @@ function requestRender() {
   rafId = requestAnimationFrame(onFrame)
 }
 
+/** 把 /2025/05/11/01.jpeg 这类 url 转成 /2025/05/11 路由 */
+function routeFromUrl(url: string): string | null {
+  const m = String(url).match(/(?:^|\D)(\d{4})\D(\d{1,2})\D(\d{1,2})(?:\D|$)/)
+  if (!m) return null
+  const [, y, mo, d] = m
+  const mm = +mo
+  const dd = +d
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null
+  return `/${y}/${mo.padStart(2, '0')}/${dd.toString().padStart(2, '0')}`
+}
+
+/** 屏幕坐标 → 命中的卡片（后绘制的在上层，所以倒序遍历） */
+function hitTest(clientX: number, clientY: number): Card | null {
+  const el = canvasRef.value
+  if (!el) return null
+  const rect = el.getBoundingClientRect()
+  if (!rect.width || !rect.height) return null
+
+  // 与 render() 里的变换严格对应：
+  //   screen = cssSize/2 + view.xy + world * view.scale
+  const wx = (clientX - rect.left - rect.width / 2 - view.x) / view.scale
+  const wy = (clientY - rect.top - rect.height / 2 - view.y) / view.scale
+
+  const hw = CARD_W / 2
+  for (let i = cards.length - 1; i >= 0; i--) {
+    const c = cards[i]
+    if (Math.abs(wx - c.x) <= hw && Math.abs(wy - c.y) <= c.h / 2) return c
+  }
+  return null
+}
+
+function onCanvasTap(clientX: number, clientY: number) {
+  const card = hitTest(clientX, clientY)
+  if (!card) return
+  const route = routeFromUrl(card.data.url)
+  if (!route) return
+  router.go(withBase(route))
+}
+
+/** 鼠标悬停在卡片上时变成手型 */
+function onHover(e: PointerEvent) {
+  if (e.pointerType !== 'mouse' || e.buttons !== 0) return
+  canvas.classList.toggle('hoverable', hitTest(e.clientX, e.clientY) !== null)
+}
+function onHoverEnd() {
+  canvas?.classList.remove('hoverable')
+}
+
 function onFrame(now: number) {
   rafPending = false
   rafId = 0
@@ -258,8 +307,11 @@ onMounted(async () => {
   unbind = bindGestures(canvas, view, {
     onUpdate: requestRender,
     onStart: () => { userInteracted = true; tween = null },
-    clampView
+    clampView,
+    onTap: onCanvasTap          // 
   })
+  canvas.addEventListener('pointermove', onHover)
+  canvas.addEventListener('pointerleave', onHoverEnd)
 
   window.addEventListener('resize', onResize)
 
@@ -277,6 +329,8 @@ onBeforeUnmount(() => {
   unbind?.()
   if (rafPending && rafId) cancelAnimationFrame(rafId)
   window.removeEventListener('resize', onResize)
+  canvasRef.value?.removeEventListener('pointermove', onHover)
+  canvasRef.value?.removeEventListener('pointerleave', onHoverEnd)
   imgCache.clear()
   cards = []
   tween = null
@@ -299,5 +353,6 @@ canvas#cv {
   cursor: grab;
   touch-action: none;
 }
-canvas#cv.dragging { cursor: grabbing; }
+canvas#cv.hoverable { cursor: pointer; }
+canvas#cv.dragging  { cursor: grabbing; }
 </style>
