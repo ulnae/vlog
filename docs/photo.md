@@ -8,7 +8,8 @@ footer: false
 <script setup lang="ts">
 import { useData } from 'vitepress'
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
-import { PHOTOS, photoUrl, dateFromUrl } from '@utils/photos'
+import { PHOTOS, thumbUrl, ASPECTS, dateFromUrl } from '@utils/photos'
+import type { Photo } from '@utils/photos'
 import { IMG_ASPECT, MIN_SCALE, MAX_SCALE, TWEEN_MS, WORLD_SCALE, setStyleTheme } from '@utils/constants'
 import { solveLayout, worldUnits } from '@utils/layout'
 import { drawCard, type Card } from '@utils/renderer'
@@ -22,7 +23,6 @@ let dpr = 1
 let destroyed = false
 let rafId = 0
 let rafPending = false
-let rebuildTimer: ReturnType<typeof setTimeout> | null = null
 let unbind: (() => void) | null = null
 
 const view = { scale: 1, x: 0, y: 0 }
@@ -32,52 +32,50 @@ let cards: Card[] = []
 let worldBounds = { w: 1, h: 1 }
 let userInteracted = false
 
-const aspectCache = new Map<string, number>()
-const imgCache = new Map<string, { loaded: boolean; img: HTMLImageElement | null }>()
+const imgCache = new Map<string, {
+  loaded: boolean
+  img: HTMLImageElement | null
+  settled: boolean
+  resolve?: () => void
+}>()
 
 let tween: any = null
 
 function aspectOf(url: string) {
-  const a = aspectCache.get(url)
+  const a = ASPECTS[url]
   return typeof a === 'number' && isFinite(a) && a > 0 ? a : IMG_ASPECT
 }
 
-function getImage(url: string) {
-  let rec = imgCache.get(url)
+function getImage(p: Photo) {
+  let rec = imgCache.get(p.url)
   if (rec) return rec
-  rec = { loaded: false, img: null }
-  imgCache.set(url, rec)
+  rec = { loaded: false, img: null, settled: false }
+  imgCache.set(p.url, rec)
   const im = new Image()
   im.onload = () => {
     rec!.loaded = true
     rec!.img = im
-    const iw = im.naturalWidth || im.width
-    const ih = im.naturalHeight || im.height
-    if (iw > 0 && ih > 0) {
-      const a = iw / ih
-      if (Math.abs((aspectCache.get(url) ?? 0) - a) > 1e-4) {
-        aspectCache.set(url, a)
-        if (cards.length > 0) scheduleRebuild()
-      }
-    }
+    rec!.settled = true
+    rec!.resolve?.()
+    rec!.resolve = undefined
     requestRender()
   }
-  im.onerror = () => { rec!.loaded = false }
-  im.src = photoUrl(url)
+  im.onerror = () => {
+    rec!.settled = true
+    rec!.resolve?.()
+    rec!.resolve = undefined
+  }
+  // Load the small build-time thumbnail, not the multi-MB original.
+  im.src = thumbUrl(p)
   return rec
 }
 
 async function preloadAll() {
+  // Reuse the imgCache loader instead of spawning a second Image() per photo.
   await Promise.all(PHOTOS.map(p => new Promise<void>(resolve => {
-    const im = new Image()
-    im.onload = () => {
-      const iw = im.naturalWidth || im.width
-      const ih = im.naturalHeight || im.height
-      if (iw > 0 && ih > 0) aspectCache.set(p.url, iw / ih)
-      resolve()
-    }
-    im.onerror = () => resolve()
-    im.src = photoUrl(p.url)
+    const rec = getImage(p)
+    if (rec.settled) { resolve(); return }
+    rec.resolve = resolve
   })))
 }
 
@@ -150,7 +148,7 @@ function build(animate: boolean) {
     Object.assign(view, targetView)
   }
 
-  for (const c of cards) getImage(c.data.url)
+  for (const c of cards) getImage(c.data)
 }
 
 function computeFitView() {
@@ -169,16 +167,6 @@ function clampView() {
   const maxY = Math.max(0, (worldBounds.h * view.scale - H) / 2)
   view.x = Math.max(-maxX, Math.min(maxX, view.x))
   view.y = Math.max(-maxY, Math.min(maxY, view.y))
-}
-
-function scheduleRebuild() {
-  if (rebuildTimer) clearTimeout(rebuildTimer)
-  rebuildTimer = setTimeout(() => {
-    rebuildTimer = null
-    if (destroyed) return
-    build(true)
-    requestRender()
-  }, 140)
 }
 
 function requestRender() {
@@ -287,7 +275,6 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   destroyed = true
   unbind?.()
-  if (rebuildTimer) clearTimeout(rebuildTimer)
   if (rafPending && rafId) cancelAnimationFrame(rafId)
   window.removeEventListener('resize', onResize)
   imgCache.clear()

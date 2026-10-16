@@ -11,3 +11,5 @@ node_modules
 
 # VitePress cache
 docs/.vitepress/cache
+
+docs/public/_thumb
