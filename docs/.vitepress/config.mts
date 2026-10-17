@@ -184,8 +184,10 @@ export default defineConfig({
           text: '10月',
           collapsed: true,
           items: [
+            { text: '01', link: '/2026/10/01' },
             { text: '04', link: '/2026/10/04' },
             { text: '06', link: '/2026/10/06' },
+            { text: '16', link: '/2026/10/16' },
           ]
         },
       ]
