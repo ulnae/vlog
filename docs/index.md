@@ -7,7 +7,7 @@ hero:
   text: 欢迎🎉
   tagline: 承天之佑 沛雨甘霖
   image:
-    src: /siam.svg
+    src: /love.svg
     alt: 三文鱼
   actions:
     - theme: brand
