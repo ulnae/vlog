@@ -5,10 +5,10 @@ layout: home
 hero:
   name: Y&L
   text: 欢迎🎉
-  tagline: 承天之佑 沛雨甘霖
+  tagline: ⸢承天之佑·沛雨甘霖⸥
   image:
     src: /love.svg
-    alt: 三文鱼
+    alt: love
   actions:
     - theme: brand
       text: 梦开始的地方
