@@ -188,6 +188,7 @@ export default defineConfig({
             { text: '04', link: '/2026/10/04' },
             { text: '06', link: '/2026/10/06' },
             { text: '16', link: '/2026/10/16' },
+            { text: '26', link: '/2026/10/26' },
           ]
         },
       ]

@@ -54,7 +54,11 @@ const RAW: { url: string; text: string }[] = [
   { url: '/2026/10/01/02.jpeg', text: '好舒服啊' },
   { url: '/2026/10/04/01.jpeg', text: '一百天喽' },
   { url: '/2026/10/04/02.jpeg', text: '一脸坏笑' },
-  { url: '/2026/10/06/01.jpeg', text: '呼呼大睡' }
+  { url: '/2026/10/06/01.jpeg', text: '呼呼大睡' },
+  { url: '/2026/10/13/01.jpeg', text: '嘿嘿' },
+  { url: '/2026/10/13/02.jpeg', text: '哇偶！' },
+  { url: '/2026/10/26/01.jpeg', text: '生日快乐宝宝🎉' },
+  { url: '/2026/10/26/02.jpeg', text: '爱你' },
 ]
 
 type Dim = { url: string; thumb: string; w: number; h: number }
